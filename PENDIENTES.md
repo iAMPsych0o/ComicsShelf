@@ -29,12 +29,15 @@
 - El nombre visible es "ComicShelf". El nombre interno `comics_panini` no se cambia porque
   define la carpeta de datos en Windows y Android.
 
-## 4. Scraping de varias tiendas
+## ✅ 4. Scraping de varias tiendas (hecho para Latinoamérica)
 
-- Poder descargar el catálogo de otras tiendas además de Panini MX.
-- Cada cómic debe guardar de qué tienda viene.
-- En la pantalla de Actualizar, dividir por tienda en acordeones (uno por tienda, con sus
-  categorías y su revisión) para que no se confundan.
+- México, Chile, Argentina y Brasil: comparten servidor Magento (tiendapanini.com.mx/graphql con
+  el encabezado `Store`: mexico, chile, argentina, default). Un acordeón por tienda en Actualizar
+  (secciones y revisión) y selector de tienda en el menú ↻ del catálogo.
+- Fuera de México el SKU lleva la tienda (`cl:`, `ar:`, `br:`): Chile y Argentina repiten códigos.
+- Moneda elegible en ⚙️ → Moneda; precios y totales se convierten con ExchangeRate-API (diario).
+- Colombia: existe en el servidor pero sin productos (revisar más adelante).
+- paniniamerica.net: Wix, bloquea el acceso y es de tarjetas coleccionables; descartada.
 
 ## ✅ 5. Exportar a PDF (hecho)
 
@@ -116,3 +119,10 @@
   - Opción para borrar las portadas guardadas.
 - **Respaldos automáticos: conservar solo los últimos 3** y borrar los más viejos al crear uno nuevo.
 - Compactar la base de datos (VACUUM) de vez en cuando.
+
+## 12. Tiendas de Europa (investigar)
+
+- panini.es, panini.it, panini.co.uk, panini.fr, panini.de y paninistore.com usan otro Magento
+  (rutas `/shp_esp_es/`, etc.) y su API responde 403. Habría que leer las páginas HTML del
+  listado; revisar si lo permiten (robots.txt, bloqueos) y cuánto cambia entre países.
+
