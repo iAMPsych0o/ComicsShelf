@@ -17,12 +17,20 @@ Built with Flutter for **Android**, **iOS** and **Windows**. Everything is store
 - **Comic status**: mark each comic as *Wishlist*, *Purchased* or *Owned*.
 - **Availability badges**: *Pre-order*, *Available* or *Sold out*, based on the last catalog update.
 - **Shopping carts**: build several named carts with their total cost, and turn a cart into an order once you buy it.
-- **Orders**: track pending and received orders with the store and tracking code. Marking an order as received moves its comics to *Owned*.
+- **Orders**: track pending and received orders with the store, carrier and tracking code. Marking an order as received moves its comics to *Owned*.
+- **Package tracking**: the carrier is detected from the tracking number (Estafeta, DHL, FedEx, UPS…) and a *Track* button opens the carrier's tracking page.
+- **Currency**: prices from every store are converted to the currency you choose (MXN, USD, EUR…) using daily exchange rates.
 - **PDF export** of collections, wishlist, carts, orders and filtered catalog views, with covers, checkboxes, prices and totals.
 - **Offline covers**: covers are cached on the device as small WebP images (~30 KB each), with an optional *Wi-Fi only* download mode.
 - **Backups**: export and import a single user's data as a `.json` file. An automatic backup is saved before every import (the last 3 are kept).
 - **PC ↔ mobile sync without a server**: send your data between devices on the same Wi-Fi network, protected by a 6-digit PIN and AES-256-GCM encryption.
 - **Multiple local users**, each with their own collections and statuses.
+
+## Download (Windows)
+
+Download `ComicShelf-Setup-x.y.z.exe` from the [latest release](https://github.com/iAMPsych0o/ComicsShelf/releases/latest) and run it. It installs for your user only (no administrator rights needed) and your data stays in `%APPDATA%\mx.coleccion\comics_panini`, even if you uninstall.
+
+> The installer is not code-signed yet, so Windows SmartScreen may show *"Windows protected your PC"*. Click **More info → Run anyway**.
 
 ## Getting started
 
@@ -48,6 +56,14 @@ flutter build apk --release      # Android
 flutter build windows --release  # Windows
 ```
 
+### Windows installer
+
+Requires [Inno Setup 6](https://jrsoftware.org/isinfo.php). This builds the app and creates `installer/Output/ComicShelf-Setup-<version>.exe` (the version comes from `pubspec.yaml`):
+
+```bash
+powershell -ExecutionPolicy Bypass -File installer/build_installer.ps1
+```
+
 ### App icon
 
 The icon source is `assets/icon/icon_c.svg`. After changing it, export it to a 1024×1024 PNG and regenerate the icons:
@@ -71,7 +87,8 @@ lib/
 ## Roadmap
 
 - [ ] Release the Android app on Google Play
-- [ ] Package tracking from each order's tracking code
+- [x] Package tracking from each order's tracking code
+- [ ] Show the shipment status inside the app
 - [ ] Support for more stores beyond Panini
 
 ## License

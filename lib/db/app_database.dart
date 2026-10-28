@@ -20,7 +20,7 @@ class AppDatabase {
   /// los respaldos automáticos antes de importar.
   final String? directory;
 
-  static const _schemaVersion = 6;
+  static const _schemaVersion = 7;
 
   static Future<AppDatabase> open() async {
     final dir = await getApplicationSupportDirectory();
@@ -204,6 +204,16 @@ class AppDatabase {
         _db.execute(
           "ALTER TABLE comics ADD COLUMN currency TEXT NOT NULL DEFAULT 'MXN'",
         );
+      }
+    }
+    if (version < 7) {
+      // Paquetería de cada pedido, para el botón "Rastrear".
+      final cols = {
+        for (final r in _db.select('PRAGMA table_info(orders)'))
+          r['name'] as String,
+      };
+      if (!cols.contains('carrier')) {
+        _db.execute('ALTER TABLE orders ADD COLUMN carrier TEXT');
       }
     }
     _db.execute('PRAGMA user_version = $_schemaVersion');
@@ -721,6 +731,7 @@ class AppDatabase {
     id: r['id'] as int,
     store: r['store'] as String?,
     tracking: r['tracking'] as String?,
+    carrier: r['carrier'] as String?,
     notes: r['notes'] as String?,
     auto: r['auto'] == 1,
     createdAt: r['created_at'] as String,
@@ -770,16 +781,18 @@ class AppDatabase {
     int userId, {
     String? store,
     String? tracking,
+    String? carrier,
     String? notes,
     Iterable<String> skus = const [],
   }) => _inTx(() {
     _db.execute(
-      'INSERT INTO orders (user_id, store, tracking, notes, created_at) '
-      'VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO orders (user_id, store, tracking, carrier, notes, '
+      'created_at) VALUES (?, ?, ?, ?, ?, ?)',
       [
         userId,
         _blankToNull(store),
         _blankToNull(tracking),
+        _blankToNull(carrier),
         _blankToNull(notes),
         _now(),
       ],
@@ -795,13 +808,15 @@ class AppDatabase {
     int orderId, {
     String? store,
     String? tracking,
+    String? carrier,
     String? notes,
   }) => _db.execute(
-    'UPDATE orders SET store = ?, tracking = ?, notes = ?, auto = 0 '
-    'WHERE id = ? AND user_id = ?',
+    'UPDATE orders SET store = ?, tracking = ?, carrier = ?, notes = ?, '
+    'auto = 0 WHERE id = ? AND user_id = ?',
     [
       _blankToNull(store),
       _blankToNull(tracking),
+      _blankToNull(carrier),
       _blankToNull(notes),
       orderId,
       userId,
@@ -1043,6 +1058,7 @@ class AppDatabase {
     int cartId, {
     String? store,
     String? tracking,
+    String? carrier,
     String? notes,
   }) => _inTx(() {
     final skus = cartItems(userId, cartId).map((i) => i.comic.sku).toList();
@@ -1050,6 +1066,7 @@ class AppDatabase {
       userId,
       store: store,
       tracking: tracking,
+      carrier: carrier,
       notes: notes,
       skus: skus,
     );
@@ -1176,6 +1193,7 @@ class AppDatabase {
         {
           'store': o['store'],
           'tracking': o['tracking'],
+          'carrier': o['carrier'],
           'notes': o['notes'],
           'auto': o['auto'] == 1,
           'created_at': o['created_at'],
@@ -1356,12 +1374,13 @@ class AppDatabase {
       for (final raw in data['orders'] as List? ?? const []) {
         if (raw is! Map) continue;
         _db.execute(
-          'INSERT INTO orders (user_id, store, tracking, notes, auto, '
-          'created_at, received_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO orders (user_id, store, tracking, carrier, notes, '
+          'auto, created_at, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
           [
             userId,
             text(raw['store']),
             text(raw['tracking']),
+            text(raw['carrier']),
             text(raw['notes']),
             raw['auto'] == true ? 1 : 0,
             text(raw['created_at']) ?? _now(),

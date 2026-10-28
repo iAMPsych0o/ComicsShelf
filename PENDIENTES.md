@@ -70,9 +70,13 @@
   - el código de envío, para consultarlo rápido sin iniciar sesión en otras páginas.
 - Definir qué pasa con los cómics que hoy están en "Comprado".
 
-## 8. Rastreo de paquetes (investigar)
+## 8. Rastreo de paquetes (fase 1 hecha)
 
-- Ver si se puede consultar el estado del envío a partir del código de rastreo de cada pedido.
+- ✅ Fase 1: cada pedido tiene paquetería (Estafeta, DHL, FedEx, UPS, Paquetexpress, Correos de
+  México, 99minutos, J&T, Amazon, Mercado Libre u Otra), adivinada por el formato de la guía.
+  Botón "Rastrear" abre la página oficial con la guía (Otra / Correos / Mercado Libre → 17TRACK).
+- Fase 2 (opcional): estado dentro de la app con la API de 17TRACK. Requiere que el usuario cree
+  una cuenta y pegue su clave; confirmar la cuota gratuita al registrarse.
 
 ## ✅ 9. Futuras compras (carritos) (hecho)
 
@@ -120,9 +124,16 @@
 - **Respaldos automáticos: conservar solo los últimos 3** y borrar los más viejos al crear uno nuevo.
 - Compactar la base de datos (VACUUM) de vez en cuando.
 
-## 12. Tiendas de Europa (investigar)
+## 12. Tiendas de Europa (investigado 27-oct-2026: bloqueado por Queue-it)
 
-- panini.es, panini.it, panini.co.uk, panini.fr, panini.de y paninistore.com usan otro Magento
-  (rutas `/shp_esp_es/`, etc.) y su API responde 403. Habría que leer las páginas HTML del
-  listado; revisar si lo permiten (robots.txt, bloqueos) y cuánto cambia entre países.
-
+- España, Italia, Reino Unido, Francia y Alemania usan otro Magento (`/shp_esp_es/`, etc.). Su
+  API GraphQL responde 403. robots.txt permite las categorías y publican sitemaps.
+- El listado HTML trae todo lo necesario (nombre, SKU, precio, fecha de salida, portada; las
+  portadas reducidas en WebP funcionan), 12-24 productos por página y solo productos a la venta.
+- Pero las páginas que no están en el caché del CDN redirigen a **Queue-it** (sala de espera
+  virtual, `panini.queue-it.net`) que solo se pasa con JavaScript en un navegador. Saltarla sería
+  evadir una protección del sitio: no se hace. Sin eso, el scraping funciona solo a ratos.
+- Cómics a la venta: España 4,707 · Italia 11,913 · Reino Unido 878 · Francia 1,528 ·
+  Alemania 14,441. paninistore.com solo vende estampas y tarjetas.
+- Opciones si se retoma: (a) lista desde el sitemap público (nombre aproximado y SKU, sin precio
+  ni portada); (b) pedir a Panini acceso a datos; (c) agregar cómics europeos a mano.

@@ -201,6 +201,37 @@ void main() {
         find.descendant(of: optionRow('Wishlist'), matching: find.text('1')),
         findsOneWidget,
       );
+      // La sección Tienda se ve aunque solo haya cómics de México.
+      await tester.scrollUntilVisible(
+        find.descendant(of: drawer, matching: find.text('Panini Brasil')),
+        100,
+        scrollable: find.descendant(
+          of: drawer,
+          matching: find.byType(Scrollable),
+        ),
+      );
+      expect(
+        find.descendant(
+          of: optionRow('Panini México'),
+          matching: find.text('3'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: optionRow('Panini Brasil'),
+          matching: find.text('0'),
+        ),
+        findsOneWidget,
+      );
+      await tester.scrollUntilVisible(
+        optionRow('Obtenido'),
+        -100,
+        scrollable: find.descendant(
+          of: drawer,
+          matching: find.byType(Scrollable),
+        ),
+      );
       await tester.tap(optionRow('Obtenido'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Listo'));
@@ -379,6 +410,7 @@ void main() {
 
     // Pedido pendiente: guía a la vista, cómics como "Comprado".
     expect(find.text('Guía: MX999'), findsOneWidget);
+    expect(find.text('Rastrear en Otra / no sé'), findsOneWidget);
     expect(db.statuses(id).values.toSet(), {ComicStatus.purchased});
     expect(db.carts(id), isEmpty);
 

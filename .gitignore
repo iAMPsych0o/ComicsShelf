@@ -57,3 +57,7 @@ CUENTA_PRUEBA.md
 *.jks
 *.keystore
 key.properties
+
+# Instalador de Windows (se generan con installer/build_installer.ps1)
+/installer/Output/
+/installer/redist/

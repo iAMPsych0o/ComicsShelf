@@ -105,7 +105,6 @@ class _CatalogScreenState extends State<CatalogScreen> {
       _statusCounts = scope.db.catalogStatusCounts(scope.user.id);
       _availabilityCounts = scope.db.availabilityCounts();
       _storeCounts = scope.db.storeCounts();
-      if (_store != null && !_storeCounts.containsKey(_store)) _store = null;
     });
   }
 
@@ -655,26 +654,22 @@ class _FiltersDrawer extends StatelessWidget {
                       leading: Icon(statusIcon(s), color: statusColor(s)),
                       onTap: () => onStatus(s),
                     ),
-                  // Solo si hay cómics de más de una tienda.
-                  if (storeCounts.length > 1) ...[
-                    header('Tienda'),
+                  header('Tienda'),
+                  option(
+                    selected: store == null,
+                    label: 'Todas',
+                    count: total,
+                    leading: const Icon(Icons.public),
+                    onTap: () => onStore(null),
+                  ),
+                  for (final s in paniniStores)
                     option(
-                      selected: store == null,
-                      label: 'Todas',
-                      count: total,
-                      leading: const Icon(Icons.public),
-                      onTap: () => onStore(null),
+                      selected: store == s.key,
+                      label: s.name,
+                      count: storeCounts[s.key] ?? 0,
+                      leading: const Icon(Icons.storefront_outlined),
+                      onTap: () => onStore(s.key),
                     ),
-                    for (final s in paniniStores)
-                      if (storeCounts[s.key] case final n?)
-                        option(
-                          selected: store == s.key,
-                          label: s.name,
-                          count: n,
-                          leading: const Icon(Icons.storefront_outlined),
-                          onTap: () => onStore(s.key),
-                        ),
-                  ],
                   header('Disponibilidad'),
                   option(
                     selected: availability == null,

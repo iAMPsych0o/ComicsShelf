@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app_scope.dart';
 import '../models.dart';
+import '../services/carriers.dart';
 import '../services/stores.dart';
 import '../services/pdf_export.dart';
 import '../widgets/comic_picker.dart';
@@ -79,6 +81,7 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
       scope.user.id,
       store: form.store,
       tracking: form.tracking,
+      carrier: form.carrier,
       notes: form.notes,
     );
     widget.changes.changed();
@@ -263,21 +266,42 @@ class _OrderTile extends StatelessWidget {
             '${o.count} cómics · ${formatPrice(o.total)}',
             if (!o.received && o.ownedCount > 0)
               '${o.ownedCount} de ${o.count} ya llegaron',
-            if (o.tracking != null) 'Guía: ${o.tracking}',
+            if (o.tracking != null)
+              'Guía: ${o.tracking}'
+                  '${o.carrier == null ? '' : ' · ${carrierByKey(o.carrier).name}'}',
           ].join('\n'),
         ),
         isThreeLine: o.tracking != null || o.ownedCount > 0,
         trailing: o.tracking == null
             ? null
-            : IconButton(
-                tooltip: 'Copiar guía',
-                icon: const Icon(Icons.copy),
-                onPressed: () => copyTracking(context, o.tracking!),
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: 'Copiar guía',
+                    icon: const Icon(Icons.copy),
+                    onPressed: () => copyTracking(context, o.tracking!),
+                  ),
+                  IconButton(
+                    tooltip: 'Rastrear',
+                    icon: const Icon(Icons.travel_explore),
+                    onPressed: () => trackOrder(o),
+                  ),
+                ],
               ),
         onTap: () => onTap(o.id),
       ),
     );
   }
+}
+
+/// Abre la página de rastreo de la paquetería del pedido con la guía.
+Future<void> trackOrder(Order o) async {
+  if (o.tracking == null) return;
+  await launchUrl(
+    carrierByKey(o.carrier).trackingUrl(o.tracking!),
+    mode: LaunchMode.externalApplication,
+  );
 }
 
 void copyTracking(BuildContext context, String tracking) {
@@ -287,7 +311,12 @@ void copyTracking(BuildContext context, String tracking) {
 
 // ------------------------------------------------------------ formulario
 
-typedef OrderForm = ({String store, String tracking, String notes});
+typedef OrderForm = ({
+  String store,
+  String tracking,
+  String? carrier,
+  String notes,
+});
 
 /// Pide tienda, guía y notas de un pedido.
 Future<OrderForm?> showOrderForm(
@@ -337,6 +366,11 @@ class _OrderFormDialogState extends State<_OrderFormDialog> {
   late final _notes = TextEditingController(text: widget.initial?.notes ?? '');
   final _storeFocus = FocusNode();
 
+  /// Paquetería elegida. Mientras el usuario no la elija a mano, se
+  /// adivina por el formato de la guía.
+  late String? _carrier = widget.initial?.carrier;
+  late bool _carrierChosen = widget.initial?.carrier != null;
+
   @override
   void dispose() {
     _store.dispose();
@@ -349,6 +383,7 @@ class _OrderFormDialogState extends State<_OrderFormDialog> {
   void _submit() => Navigator.pop(context, (
     store: _store.text,
     tracking: _tracking.text,
+    carrier: _tracking.text.trim().isEmpty ? null : _carrier,
     notes: _notes.text,
   ));
 
@@ -410,10 +445,35 @@ class _OrderFormDialogState extends State<_OrderFormDialog> {
             TextField(
               controller: _tracking,
               textInputAction: TextInputAction.next,
+              onChanged: (v) {
+                if (_carrierChosen) return;
+                setState(() => _carrier = detectCarrier(v)?.key);
+              },
               decoration: const InputDecoration(
                 labelText: 'Guía de envío (opcional)',
                 prefixIcon: Icon(Icons.qr_code_2),
               ),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              key: ValueKey(_carrier),
+              initialValue: _carrier ?? otherCarrier.key,
+              isExpanded: true,
+              decoration: InputDecoration(
+                labelText: 'Paquetería',
+                prefixIcon: const Icon(Icons.local_shipping_outlined),
+                helperText: _carrierChosen || _carrier == null
+                    ? null
+                    : 'Detectada por el formato de la guía',
+              ),
+              items: [
+                for (final c in carriers)
+                  DropdownMenuItem(value: c.key, child: Text(c.name)),
+              ],
+              onChanged: (v) => setState(() {
+                _carrier = v;
+                _carrierChosen = true;
+              }),
             ),
             const SizedBox(height: 12),
             TextField(
@@ -514,6 +574,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
       widget.orderId,
       store: form.store,
       tracking: form.tracking,
+      carrier: form.carrier,
       notes: form.notes,
     );
     _changed();
@@ -671,13 +732,19 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                 '${o.count} cómics · ${formatPrice(o.total)}',
                 style: theme.textTheme.titleSmall,
               ),
-              if (o.tracking != null)
+              if (o.tracking != null) ...[
                 ActionChip(
                   avatar: const Icon(Icons.copy, size: 16),
                   label: Text('Guía: ${o.tracking}'),
                   tooltip: 'Copiar guía',
                   onPressed: () => copyTracking(context, o.tracking!),
                 ),
+                OutlinedButton.icon(
+                  onPressed: () => trackOrder(o),
+                  icon: const Icon(Icons.travel_explore),
+                  label: Text('Rastrear en ${carrierByKey(o.carrier).name}'),
+                ),
+              ],
               if (o.received)
                 OutlinedButton.icon(
                   onPressed: () => _setReceived(false),
@@ -866,6 +933,7 @@ class _CartDetailScreenState extends State<CartDetailScreen> {
       widget.cartId,
       store: form.store,
       tracking: form.tracking,
+      carrier: form.carrier,
       notes: form.notes,
     );
     widget.changes.changed();

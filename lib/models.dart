@@ -220,6 +220,9 @@ class Order {
   final int id;
   final String? store;
   final String? tracking;
+
+  /// Clave de la paquetería (ver services/carriers.dart).
+  final String? carrier;
   final String? notes;
 
   /// Pedido creado por la app para los cómics marcados "Comprado" que no
@@ -235,6 +238,7 @@ class Order {
     required this.id,
     this.store,
     this.tracking,
+    this.carrier,
     this.notes,
     this.auto = false,
     required this.createdAt,

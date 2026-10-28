@@ -186,7 +186,13 @@ class ScraperScreenState extends State<ScraperScreen> {
     final db = AppScope.of(context).db;
     final ignored = db.ignoredSkus();
     _existing = db.existingSkus();
-    result.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    // Primero los nuevos (los que no están en el catálogo); luego por nombre.
+    result.sort((a, b) {
+      final newA = !_existing.contains(a.sku),
+          newB = !_existing.contains(b.sku);
+      if (newA != newB) return newA ? -1 : 1;
+      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    });
     _scraped = result;
     _reviewCategories = categoryNames
         .where((n) => result.any((c) => c.categories.contains(n)))
@@ -205,6 +211,10 @@ class ScraperScreenState extends State<ScraperScreen> {
       );
     _categoryFilter = null;
     _show = _Show.all;
+    // Los nuevos abiertos; lo que solo se actualiza, cerrado.
+    _collapsedReview
+      ..clear()
+      ..addAll(paniniStores.map((s) => '${s.key}:upd'));
     _search.clear();
     setState(() => _stage = _Stage.review);
     _applyFilters();
@@ -451,6 +461,13 @@ class ScraperScreenState extends State<ScraperScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Gira siempre, aunque una página tarde: la app no se detuvo.
+              const SizedBox(
+                width: 48,
+                height: 48,
+                child: CircularProgressIndicator(strokeWidth: 4),
+              ),
+              const SizedBox(height: 20),
               Text(
                 'Descargando ${_runningStore?.name ?? 'catálogo'}…',
                 style: theme.textTheme.titleLarge,
@@ -661,10 +678,103 @@ class ScraperScreenState extends State<ScraperScreen> {
               '${all.length} encontrados · $selected para migrar · '
               '${visible.length} visibles',
             ),
+            trailing: Tooltip(
+              message: 'Marcar o desmarcar todos los visibles de esta tienda',
+              child: _groupCheckbox(visible),
+            ),
             onTap: () => setState(
               () => open
                   ? _collapsedReview.add(store.key)
                   : _collapsedReview.remove(store.key),
+            ),
+          ),
+        ),
+      ),
+      if (open) ...[
+        ..._reviewGroup(
+          '${store.key}:new',
+          'Nuevos',
+          Icons.fiber_new_outlined,
+          all.where((c) => !_existing.contains(c.sku)),
+          visible.where((c) => !_existing.contains(c.sku)).toList(),
+          theme,
+        ),
+        ..._reviewGroup(
+          '${store.key}:upd',
+          'Por actualizar',
+          Icons.update,
+          all.where((c) => _existing.contains(c.sku)),
+          visible.where((c) => _existing.contains(c.sku)).toList(),
+          theme,
+        ),
+      ],
+    ];
+  }
+
+  /// Casilla de un encabezado de acordeón: marca o desmarca todos sus
+  /// productos visibles. Se ve a medias si solo algunos están marcados.
+  Widget _groupCheckbox(List<Comic> items) {
+    final n = items.where((c) => _selected.contains(c.sku)).length;
+    final value = n == 0 ? false : (n == items.length ? true : null);
+    return Checkbox(
+      tristate: true,
+      value: items.isEmpty ? false : value,
+      onChanged: items.isEmpty
+          ? null
+          : (_) {
+              setState(() {
+                final selectAll = value != true;
+                for (final c in items) {
+                  selectAll ? _selected.add(c.sku) : _selected.remove(c.sku);
+                }
+              });
+              // Con "Seleccionados" o "Ignorados" la lista cambia.
+              if (_show == _Show.selected || _show == _Show.ignored) {
+                _applyFilters();
+              }
+            },
+    );
+  }
+
+  /// Sub-acordeón dentro de una tienda: los nuevos (no están en el catálogo)
+  /// o los que ya existen y solo se actualizan.
+  List<Widget> _reviewGroup(
+    String key,
+    String title,
+    IconData icon,
+    Iterable<Comic> all,
+    List<Comic> visible,
+    ThemeData theme,
+  ) {
+    if (all.isEmpty) return const [];
+    final selected = all.where((c) => _selected.contains(c.sku)).length;
+    final open = !_collapsedReview.contains(key);
+    return [
+      SliverToBoxAdapter(
+        child: Material(
+          color: theme.colorScheme.surfaceContainer,
+          child: ListTile(
+            contentPadding: const EdgeInsets.only(left: 40, right: 16),
+            leading: Icon(open ? Icons.expand_less : Icons.expand_more),
+            title: Row(
+              children: [
+                Icon(icon, size: 18),
+                const SizedBox(width: 6),
+                Flexible(child: Text('$title (${all.length})')),
+              ],
+            ),
+            subtitle: Text(
+              '$selected para migrar · ${visible.length} visibles',
+            ),
+            trailing: Tooltip(
+              message: 'Marcar o desmarcar todos los visibles de "$title"',
+              child: _groupCheckbox(visible),
+            ),
+            dense: true,
+            onTap: () => setState(
+              () => open
+                  ? _collapsedReview.add(key)
+                  : _collapsedReview.remove(key),
             ),
           ),
         ),
