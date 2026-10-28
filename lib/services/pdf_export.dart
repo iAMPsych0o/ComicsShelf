@@ -62,7 +62,9 @@ Future<Uint8List> buildComicsPdf({
     (i) => i.status != ComicStatus.owned && i.status != ComicStatus.purchased,
   );
 
-  final red = _pdfColor(ownedColor);
+  // Rojo de la marca para títulos y encabezados; verde para lo obtenido.
+  const red = PdfColor.fromInt(0xFFB8323A);
+  final ownedFill = _pdfColor(ownedColor);
   const grey = PdfColor.fromInt(0xFF666666);
   final headerStyle = pw.TextStyle(
     fontWeight: pw.FontWeight.bold,
@@ -184,7 +186,9 @@ Future<Uint8List> buildComicsPdf({
                       width: 9,
                       height: 9,
                       decoration: pw.BoxDecoration(
-                        color: item.status == ComicStatus.owned ? red : null,
+                        color: item.status == ComicStatus.owned
+                            ? ownedFill
+                            : null,
                         border: pw.Border.all(color: grey, width: 0.8),
                       ),
                     ),

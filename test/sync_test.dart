@@ -21,7 +21,7 @@ void main() {
   test(
     'el receptor contesta directo a quien pregunta (para Android)',
     () async {
-      final receiver = SyncReceiver(deviceName: 'PC de alan');
+      final receiver = SyncReceiver(deviceName: 'PC de psych0o');
       await receiver.start();
       addTearDown(receiver.stop);
 
@@ -47,7 +47,7 @@ void main() {
         (jsonDecode(utf8.decode(dg!.data)) as Map).cast<String, Object?>(),
         dg.address.address,
       );
-      expect(peer?.name, 'PC de alan');
+      expect(peer?.name, 'PC de psych0o');
       expect(peer?.port, receiver.port);
     },
   );
@@ -57,9 +57,12 @@ void main() {
     late SyncSender sender;
 
     setUp(() async {
-      receiver = SyncReceiver(deviceName: 'Teléfono de alan', announce: false);
+      receiver = SyncReceiver(
+        deviceName: 'Teléfono de psych0o',
+        announce: false,
+      );
       await receiver.start();
-      sender = SyncSender(deviceName: 'PC de alan');
+      sender = SyncSender(deviceName: 'PC de psych0o');
     });
 
     tearDown(() async {
@@ -70,7 +73,7 @@ void main() {
     test('PC → Móvil: llegan las colecciones y estados del usuario', () async {
       // "PC" con datos.
       final pc = AppDatabase.inMemory();
-      final u = pc.insertUser('alan', 'h', 's');
+      final u = pc.insertUser('psych0o', 'h', 's');
       pc.upsertComics([
         const Comic(sku: 'QBATM001', name: 'Batman #1'),
         // En el catálogo de la PC pero en ninguna colección ni estado.
@@ -81,7 +84,7 @@ void main() {
       pc.setStatus(u, ['QBATM001'], ComicStatus.owned);
 
       final peer = await sender.peerAt('127.0.0.1:${receiver.port}');
-      expect(peer.name, 'Teléfono de alan');
+      expect(peer.name, 'Teléfono de psych0o');
       // Como la pantalla real: al recibir, el receptor deja de escuchar de
       // inmediato. El que envía no debe ver eso como error.
       final closed = receiver.received.then((_) => receiver.stop());
@@ -93,11 +96,11 @@ void main() {
 
       await closed;
       final got = await receiver.received;
-      expect(got.from, 'PC de alan');
+      expect(got.from, 'PC de psych0o');
 
       // "Teléfono" aplica lo recibido.
       final phone = AppDatabase.inMemory();
-      final me = phone.insertUser('alan', 'h', 's');
+      final me = phone.insertUser('psych0o', 'h', 's');
       // El teléfono ya tenía Batman #1 con otro nombre: no debe cambiar.
       phone.upsertComics([
         const Comic(sku: 'QBATM001', name: 'Batman #1 (tel)'),

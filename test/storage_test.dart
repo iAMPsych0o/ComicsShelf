@@ -124,7 +124,10 @@ void main() {
   });
 
   test('respaldos automáticos: quedan los últimos 3 de cada usuario', () {
-    final alan = User(id: db.insertUser('alan', 'h', 's'), username: 'alan');
+    final psych0o = User(
+      id: db.insertUser('psych0o', 'h', 's'),
+      username: 'psych0o',
+    );
     final otro = User(id: db.insertUser('otro', 'h', 's'), username: 'otro');
     final folder = Directory(p.join(tmp.path, 'respaldos_automaticos'));
 
@@ -132,12 +135,14 @@ void main() {
     final created = <String>[];
     for (var i = 0; i < 5; i++) {
       created.add(
-        p.basename(importWithAutoBackup(db, alan, db.exportUserData(alan.id))!),
+        p.basename(
+          importWithAutoBackup(db, psych0o, db.exportUserData(psych0o.id))!,
+        ),
       );
     }
 
     final names = folder.listSync().map((f) => p.basename(f.path)).toList();
-    final mine = names.where((n) => n.startsWith('alan_')).toSet();
+    final mine = names.where((n) => n.startsWith('psych0o_')).toSet();
     expect(mine, created.skip(2).toSet()); // los 3 más nuevos
     expect(names.where((n) => n.startsWith('otro_')), hasLength(1));
   });
@@ -156,7 +161,7 @@ void main() {
     expect(pdfSafe('Spider-Man – “Ñandú” 日本'), 'Spider-Man – “Ñandú” ??');
     final bytes = await buildComicsPdf(
       title: 'Wishlist',
-      username: 'alan',
+      username: 'psych0o',
       items: [
         for (var n = 0; n < 120; n++)
           CollectionItem(

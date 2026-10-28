@@ -167,12 +167,13 @@ void main() {
       await tester.tap(find.text('Catálogo').first);
       await tester.pumpAndSettle();
       await cardMenu('Otro comic #1', 'Mover a wishlist');
-      // El aviso usa el color del estado y se cierra al hacer clic.
+      // El aviso usa el tono oscuro del estado (texto blanco legible) y se
+      // cierra al hacer clic.
       final notice = find.text('Marcado: Wishlist');
       expect(notice, findsOneWidget);
       expect(
         tester.widget<SnackBar>(find.byType(SnackBar)).backgroundColor,
-        wishlistColor,
+        statusBackground(ComicStatus.wishlist),
       );
       await tester.tap(notice);
       await tester.pumpAndSettle();

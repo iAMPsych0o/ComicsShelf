@@ -89,46 +89,46 @@ void main() {
 
   group('Respaldos por usuario', () {
     late AppDatabase db;
-    late int alan, ana;
+    late int psych0o, ana;
 
     setUp(() {
       db = AppDatabase.inMemory();
-      alan = db.insertUser('alan', 'hash-secreto', 'sal');
+      psych0o = db.insertUser('psych0o', 'hash-secreto', 'sal');
       ana = db.insertUser('ana', 'otro-hash', 'sal2');
       db.upsertComics([
         _comic('QBATM001', 'Batman #1', n: 1),
         _comic('QBATM002', 'Batman #2', n: 2),
         _comic('QONEP001', 'One Piece N.1', cat: 'Panini Manga'),
       ]);
-      final c = db.createCollection(alan, 'Batman');
-      db.addToCollection(alan, c, ['QBATM001', 'QBATM002']);
-      db.setStatus(alan, ['QBATM001'], ComicStatus.owned);
-      db.setStatus(alan, ['QBATM002'], ComicStatus.wishlist);
+      final c = db.createCollection(psych0o, 'Batman');
+      db.addToCollection(psych0o, c, ['QBATM001', 'QBATM002']);
+      db.setStatus(psych0o, ['QBATM001'], ComicStatus.owned);
+      db.setStatus(psych0o, ['QBATM002'], ComicStatus.wishlist);
       final a = db.createCollection(ana, 'Manga de Ana');
       db.addToCollection(ana, a, ['QONEP001']);
       db.setStatus(ana, ['QONEP001'], ComicStatus.owned);
     });
 
     test('exporta solo los datos del usuario, sin contraseñas', () {
-      final data = db.exportUserData(alan);
+      final data = db.exportUserData(psych0o);
       final text = jsonEncode(data);
       expect(text, isNot(contains('hash-secreto')));
       expect(text, isNot(contains('Manga de Ana')));
       expect(text, isNot(contains('QONEP001'))); // cómic que solo usa Ana
       final summary = AppDatabase.inspectUserBackup(data);
-      expect(summary.username, 'alan');
+      expect(summary.username, 'psych0o');
       expect((summary.collections, summary.owned, summary.wishlist), (1, 1, 1));
     });
 
     test('importar solo reemplaza los datos del usuario activo', () {
-      final backup = db.exportUserData(alan);
-      // Alan cambia sus datos después del respaldo.
-      db.setStatus(alan, ['QBATM002'], ComicStatus.owned);
-      db.createCollection(alan, 'Nueva');
+      final backup = db.exportUserData(psych0o);
+      // Psych0o cambia sus datos después del respaldo.
+      db.setStatus(psych0o, ['QBATM002'], ComicStatus.owned);
+      db.createCollection(psych0o, 'Nueva');
 
-      db.importUserData(alan, backup);
-      expect(db.collections(alan).map((c) => c.name), ['Batman']);
-      expect(db.statuses(alan), {
+      db.importUserData(psych0o, backup);
+      expect(db.collections(psych0o).map((c) => c.name), ['Batman']);
+      expect(db.statuses(psych0o), {
         'QBATM001': ComicStatus.owned,
         'QBATM002': ComicStatus.wishlist,
       });
@@ -139,11 +139,11 @@ void main() {
 
     test('en un dispositivo nuevo recrea colecciones, estados y cómics', () {
       final backup = jsonDecode(
-        jsonEncode(db.exportUserData(alan)),
+        jsonEncode(db.exportUserData(psych0o)),
       ) as Map<String, Object?>;
 
       final other = AppDatabase.inMemory();
-      final me = other.insertUser('alan_tel', 'h', 's');
+      final me = other.insertUser('psych0o_tel', 'h', 's');
       other.importUserData(me, backup);
 
       expect(other.comicCount(), 2); // los cómics de sus colecciones/estados
@@ -156,9 +156,9 @@ void main() {
     });
 
     test('no cambia cómics que ya existen en el catálogo', () {
-      final backup = db.exportUserData(alan);
+      final backup = db.exportUserData(psych0o);
       ((backup['comics'] as List).first as Map)['name'] = 'Nombre viejo';
-      db.importUserData(alan, backup);
+      db.importUserData(psych0o, backup);
       expect(db.searchComics(query: 'Nombre viejo'), isEmpty);
     });
 
@@ -194,11 +194,11 @@ void main() {
   group('Auth', () {
     test('"Recuérdame" mantiene la sesión al reabrir la app', () {
       final db = AppDatabase.inMemory();
-      AuthService(db).register('alan', 'secreto123', remember: true);
+      AuthService(db).register('psych0o', 'secreto123', remember: true);
 
       // Al reabrir la app (nuevo AuthService) la sesión sigue activa.
       final reopened = AuthService(db);
-      expect(reopened.currentUser?.username, 'alan');
+      expect(reopened.currentUser?.username, 'psych0o');
       expect(reopened.isRemembered, isTrue);
 
       // Cerrar sesión la olvida.
@@ -206,11 +206,11 @@ void main() {
       expect(AuthService(db).isLoggedIn, isFalse);
 
       // Sin "Recuérdame" no se guarda.
-      AuthService(db).login('alan', 'secreto123');
+      AuthService(db).login('psych0o', 'secreto123');
       expect(AuthService(db).isLoggedIn, isFalse);
 
       // Se puede activar o desactivar desde la sesión.
-      final auth = AuthService(db)..login('alan', 'secreto123');
+      final auth = AuthService(db)..login('psych0o', 'secreto123');
       auth.setRemembered(true);
       expect(AuthService(db).isLoggedIn, isTrue);
       auth.setRemembered(false);
@@ -220,16 +220,19 @@ void main() {
     test('registro, login y errores', () {
       final db = AppDatabase.inMemory();
       final auth = AuthService(db);
-      auth.register('alan', 'secreto123');
-      expect(auth.currentUser!.username, 'alan');
+      auth.register('psych0o', 'secreto123');
+      expect(auth.currentUser!.username, 'psych0o');
       auth.logout();
       expect(auth.isLoggedIn, isFalse);
-      expect(() => auth.login('alan', 'mala'), throwsA(isA<AuthException>()));
       expect(
-        () => auth.register('ALAN', 'otra12345'),
+        () => auth.login('psych0o', 'mala'),
         throwsA(isA<AuthException>()),
       );
-      auth.login('Alan', 'secreto123');
+      expect(
+        () => auth.register('PSYCH0O', 'otra12345'),
+        throwsA(isA<AuthException>()),
+      );
+      auth.login('Psych0o', 'secreto123');
       expect(auth.isLoggedIn, isTrue);
     });
   });

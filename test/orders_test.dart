@@ -12,7 +12,7 @@ void main() {
 
   setUp(() {
     db = AppDatabase.inMemory();
-    u = db.insertUser('alan', 'h', 's');
+    u = db.insertUser('psych0o', 'h', 's');
     db.upsertComics([
       for (var n = 1; n <= 5; n++)
         Comic(
@@ -188,7 +188,7 @@ void main() {
     expect(summary.carts, 1);
 
     final other = AppDatabase.inMemory();
-    final me = other.insertUser('alan', 'h', 's');
+    final me = other.insertUser('psych0o', 'h', 's');
     other.importUserData(me, data);
     final orders = other.orders(me);
     expect(orders.map((o) => o.title), ['Compras sin pedido', 'Panini']);
@@ -209,7 +209,7 @@ void main() {
         ..remove('orders')
         ..remove('carts');
       final other = AppDatabase.inMemory();
-      final me = other.insertUser('alan', 'h', 's');
+      final me = other.insertUser('psych0o', 'h', 's');
       other.importUserData(me, data);
       expect(other.orders(me).single.auto, isTrue);
     },
@@ -238,7 +238,7 @@ void main() {
       CREATE TABLE comic_status (user_id INTEGER NOT NULL, sku TEXT NOT NULL,
         status TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (user_id, sku));
       CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT);
-      INSERT INTO users VALUES (1, 'alan', 'h', 's', '2026');
+      INSERT INTO users VALUES (1, 'psych0o', 'h', 's', '2026');
       INSERT INTO comics (sku, name, updated_at) VALUES ('Q1', 'Uno', '2026');
       INSERT INTO comic_status VALUES (1, 'Q1', 'purchased', '2026');
       PRAGMA user_version = 4;

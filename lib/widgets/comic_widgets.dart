@@ -77,11 +77,11 @@ class CollectionValues extends StatelessWidget {
 }
 
 const preorderColor = Color(0xFF6A47B8);
-const availableColor = Color(0xFF1E7B4F);
+const availableColor = Color(0xFF2F6FB0);
 const soldOutColor = Color(0xFF2A2A2A);
 
 Color availabilityColor(Availability a) => switch (a) {
-  Availability.available => const Color(0xFF3FA874),
+  Availability.available => const Color(0xFF5A9BD8),
   // El gris de "agotado" de la card no se ve sobre el fondo del panel.
   Availability.soldOut => const Color(0xFF8A8A8A),
   Availability.preorder => const Color(0xFF9A7FE0),
@@ -182,7 +182,13 @@ void showNotice(
   VoidCallback? onUndo,
   ComicStatus? status,
 }) {
-  final color = status == null ? const Color(0xFF2A2A2A) : statusColor(status);
+  final color = switch (status) {
+    null => const Color(0xFF2A2A2A),
+    ComicStatus.owned ||
+    ComicStatus.purchased ||
+    ComicStatus.wishlist => statusBackground(status),
+    _ => statusColor(status),
+  };
   messenger
     ..hideCurrentSnackBar()
     ..showSnackBar(
@@ -584,12 +590,14 @@ Future<void> showComicDetail(
 
 // ------------------------------------------------------------------ estados
 
-/// Colores de estado. Obtenido, comprado y wishlist están validados para
-/// daltonismo sobre el fondo oscuro; los otros dos son grises neutros que
-/// se distinguen por intensidad, ícono y etiqueta.
-const ownedColor = Color(0xFFB8323A);
+/// Colores de estado: Obtenido verde, Comprado ámbar, Wishlist rojo.
+/// Validados para daltonismo sobre el fondo oscuro (#161616, todos los
+/// pares, ΔE ≥ 8); los otros dos son grises neutros que se distinguen por
+/// intensidad, ícono y etiqueta. Para fondos con texto blanco encima se usan
+/// los tonos oscuros de [statusBackground].
+const ownedColor = Color(0xFF2FA67F);
 const purchasedColor = Color(0xFFC0843E);
-const wishlistColor = Color(0xFF3E86C2);
+const wishlistColor = Color(0xFFB8323A);
 const notInterestedColor = Color(0xFF4A4A4A);
 const unclassifiedColor = Color(0xFF707070);
 
@@ -613,10 +621,10 @@ IconData statusIcon(ComicStatus s) => switch (s) {
 };
 
 /// Fondo de la zona de texto de la tarjeta: un color distinto por estado.
-Color _infoBackground(ComicStatus s) => switch (s) {
-  ComicStatus.owned => ownedColor,
+Color statusBackground(ComicStatus s) => switch (s) {
+  ComicStatus.owned => const Color(0xFF1B6B50),
   ComicStatus.purchased => const Color(0xFF7A5220),
-  ComicStatus.wishlist => const Color(0xFF1F4E79),
+  ComicStatus.wishlist => const Color(0xFF8E2730),
   ComicStatus.notInterested => const Color(0xFF262626),
   ComicStatus.unclassified => const Color(0xFF161616),
 };
@@ -815,7 +823,7 @@ class ComicStatusCard extends StatelessWidget {
             ),
             AnimatedContainer(
               duration: const Duration(milliseconds: 200),
-              color: _infoBackground(status),
+              color: statusBackground(status),
               padding: const EdgeInsets.fromLTRB(8, 6, 0, 6),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
