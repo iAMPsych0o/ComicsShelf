@@ -4,6 +4,8 @@ Comic and manga collection manager for Panini. Import the catalog from Panini's 
 
 Built with Flutter for **Android**, **iOS** and **Windows**. Everything is stored locally on your device, with no server or account in the cloud.
 
+> 📱 **Coming soon to Google Play:** the Android app will be available on the Play Store shortly.
+
 > *This project is not affiliated with, sponsored by, or endorsed by Panini. Panini is a registered trademark of its respective owners.*
 
 ## Features
@@ -66,6 +68,7 @@ lib/
 
 ## Roadmap
 
+- [ ] Release the Android app on Google Play
 - [ ] Package tracking from each order's tracking code
 - [ ] Support for more stores beyond Panini
 
