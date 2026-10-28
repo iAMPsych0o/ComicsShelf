@@ -1,5 +1,7 @@
 # ComicShelf
 
+**English** | [Español](README.es.md)
+
 Comic and manga collection manager for Panini. Import the catalog from Panini's online stores, organize your comics into collections, track what you own, what you've bought and what you're still missing, and plan your next purchases.
 
 Built with Flutter for **Android**, **iOS** and **Windows**. Everything is stored locally on your device, with no server or account in the cloud.
