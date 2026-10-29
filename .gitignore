@@ -61,3 +61,8 @@ key.properties
 # Instalador de Windows (se generan con installer/build_installer.ps1)
 /installer/Output/
 /installer/redist/
+
+# Paquetes generados (APK/AAB/instaladores) en cualquier carpeta
+*.apk
+*.aab
+*.msix
