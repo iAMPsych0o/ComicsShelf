@@ -32,6 +32,10 @@ Descarga `ComicShelf-Setup-x.y.z.exe` de la [última versión](https://github.co
 
 > El instalador todavía no está firmado, así que Windows SmartScreen puede mostrar *"Windows protegió su PC"*. Haz clic en **Más información → Ejecutar de todas formas**.
 
+## Descarga (Android)
+
+Descarga `ComicShelf-x.y.z.apk` de la [última versión](https://github.com/iAMPsych0o/ComicsShelf/releases/latest) desde tu teléfono y ábrelo. La primera vez, Android te pedirá permitir instalar apps desde tu navegador o administrador de archivos.
+
 ## Primeros pasos
 
 ### Requisitos
@@ -54,6 +58,17 @@ flutter run
 ```bash
 flutter build apk --release      # Android
 flutter build windows --release  # Windows
+```
+
+### APK de Android firmado
+
+Los builds de release se firman con la llave indicada en `android/key.properties` (no está en el repositorio). Sin ese archivo, `flutter build apk --release` usa la llave de depuración para que cualquiera pueda compilar el proyecto. Para usar tu propia llave, crea `android/key.properties`:
+
+```properties
+storePassword=...
+keyPassword=...
+keyAlias=...
+storeFile=C:/ruta/a/tu-llave-release.jks
 ```
 
 ### Instalador de Windows
