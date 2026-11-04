@@ -108,7 +108,7 @@ class _WishlistScreenState extends State<WishlistScreen> {
       );
     }
 
-    final cost = sumValue(_items);
+    final cost = sumFinalValue(_items);
 
     return Column(
       children: [

@@ -296,7 +296,160 @@ void main() {
       Availability.available: 2,
       Availability.soldOut: 2,
       Availability.preorder: 2,
+      Availability.onSale: 0,
     });
+  });
+
+  test('ofertas: descuento, fin de la promoción y filtro', () {
+    final today = DateTime(2026, 10, 30);
+    const sale = Comic(sku: 'S', name: 'S', price: 50, regularPrice: 100);
+    expect(sale.isOnSale(today), isTrue);
+    expect(sale.discountPercent, 50);
+    const lastDay = Comic(
+      sku: 'L',
+      name: 'L',
+      price: 80,
+      regularPrice: 100,
+      promoEnds: '2026-10-30',
+    );
+    expect(lastDay.isOnSale(today), isTrue);
+    const ended = Comic(
+      sku: 'E',
+      name: 'E',
+      price: 80,
+      regularPrice: 100,
+      promoEnds: '2020-01-01',
+    );
+    expect(ended.isOnSale(today), isFalse);
+    expect(const Comic(sku: 'N', name: 'N', price: 80).isOnSale(), isFalse);
+
+    final db = AppDatabase.inMemory();
+    db.upsertComics([
+      sale,
+      ended,
+      const Comic(
+        sku: 'F',
+        name: 'F',
+        price: 70,
+        regularPrice: 100,
+        promoEnds: '2099-12-31',
+      ),
+      const Comic(sku: 'N', name: 'N', price: 80),
+    ]);
+    expect(
+      db.searchComics(availability: Availability.onSale).map((c) => c.sku),
+      unorderedEquals(['S', 'F']),
+    );
+    expect(db.availabilityCounts()[Availability.onSale], 2);
+    final f = db.searchComics(query: 'F').single;
+    expect(f.regularPrice, 100);
+    expect(f.promoEnds, '2099-12-31');
+    // Al terminar la oferta, el siguiente scraping limpia el precio normal.
+    db.upsertComics([const Comic(sku: 'F', name: 'F', price: 100)]);
+    expect(db.searchComics(query: 'F').single.isOnSale(), isFalse);
+  });
+
+  test('promociones del carrito: se guardan, se limpian y se filtran', () {
+    final db = AppDatabase.inMemory();
+    db.upsertComics([
+      const Comic(sku: 'A', name: 'A', price: 899, stockStatus: 'IN_STOCK'),
+      const Comic(sku: 'B', name: 'B', price: 139, stockStatus: 'IN_STOCK'),
+      const Comic(sku: 'C', name: 'C', price: 99, stockStatus: 'OUT_OF_STOCK'),
+      const Comic(sku: 'cl:D', name: 'D', store: 'cl', stockStatus: 'IN_STOCK'),
+    ]);
+    // Solo los de la tienda que están en existencia.
+    expect(db.cartPromoCandidates('mx').map((c) => c.sku), ['A', 'B']);
+
+    db.setCartPromos(
+      ['A', 'B'],
+      {'A': (percent: 30.0, label: 'Descuentos espeluznantes')},
+    );
+    Comic get(String sku) => db.searchComics(query: sku).single;
+    expect(get('A').cartDiscount, 30);
+    expect(get('A').cartPromo, 'Descuentos espeluznantes');
+    expect(get('A').isOnSale(), isTrue);
+    expect(get('A').discountPercent, 30);
+    expect(get('B').isOnSale(), isFalse);
+    expect(
+      db.searchComics(availability: Availability.onSale).map((c) => c.sku),
+      ['A'],
+    );
+
+    // Actualizar el catálogo no borra la promoción del carrito.
+    db.upsertComics([
+      const Comic(sku: 'A', name: 'A', price: 899, stockStatus: 'IN_STOCK'),
+    ]);
+    expect(get('A').cartDiscount, 30);
+
+    // La siguiente revisión la quita si ya no tiene descuento; lo que no se
+    // revisó no cambia.
+    db.setCartPromos(['B'], {'B': (percent: 20.0, label: 'X')});
+    expect(get('A').cartDiscount, 30);
+    db.setCartPromos(['A', 'B'], {});
+    expect(get('A').hasCartPromo, isFalse);
+    expect(get('B').hasCartPromo, isFalse);
+  });
+
+  test('precio final con descuentos y filtro por % de descuento', () {
+    const cart = Comic(sku: 'C', name: 'C', price: 899, cartDiscount: 30);
+    expect(cart.finalPrice, 629.3);
+    expect(cart.listPrice(), 899);
+    expect(cart.discountPercent, 30);
+    // Rebajado en el catálogo y además con descuento en el carrito.
+    const both = Comic(
+      sku: 'B',
+      name: 'B',
+      price: 80,
+      regularPrice: 100,
+      cartDiscount: 10,
+    );
+    expect(both.finalPrice, 72);
+    expect(both.listPrice(), 100);
+    expect(both.discountPercent, 28);
+    const plain = Comic(sku: 'P', name: 'P', price: 150);
+    expect(plain.finalPrice, 150);
+    expect(plain.discountPercent, 0);
+
+    final db = AppDatabase.inMemory();
+    db.upsertComics([
+      cart,
+      both,
+      plain,
+      const Comic(sku: 'D', name: 'D', price: 90, cartDiscount: 0),
+      // Oferta del catálogo ya terminada: no cuenta.
+      const Comic(
+        sku: 'E',
+        name: 'E',
+        price: 50,
+        regularPrice: 100,
+        promoEnds: '2020-01-01',
+      ),
+      const Comic(sku: 'F', name: 'F', price: 45, regularPrice: 100),
+      const Comic(sku: 'N', name: 'N'),
+    ]);
+    db.setCartPromos(
+      ['C', 'B'],
+      {'C': (percent: 30.0, label: 'X'), 'B': (percent: 10.0, label: 'X')},
+    );
+    Set<String> atLeast(int d) =>
+        db.searchComics(minDiscount: d).map((c) => c.sku).toSet();
+    expect(atLeast(10), {'C', 'B', 'F'});
+    expect(atLeast(20), {'C', 'B', 'F'});
+    expect(atLeast(30), {'C', 'F'});
+    expect(atLeast(50), {'F'});
+    expect(db.discountCounts(), {10: 3, 20: 3, 30: 2, 40: 1, 50: 1});
+    // Coincide con lo que calcula el modelo.
+    for (final c in db.searchComics(minDiscount: 10)) {
+      expect(c.discountPercent, greaterThanOrEqualTo(10), reason: c.sku);
+    }
+
+    // Wishlist y carritos suman lo que se paga; colecciones, el de lista.
+    final items = [
+      for (final c in [cart, plain])
+        CollectionItem(comic: c, status: ComicStatus.wishlist),
+    ];
+    expect(sumFinalValue(items), closeTo(779.3, 0.001));
+    expect(sumValue(items), 1049);
   });
 
   test('cada colección suma lo que tienes, lo comprado y lo que falta', () {

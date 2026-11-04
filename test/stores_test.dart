@@ -121,12 +121,14 @@ void main() {
                   'name': '100% Marvel 333',
                   'url_key': '100-marvel-333',
                   'stock_status': 'IN_STOCK',
+                  'special_to_date': '2099-12-18 03:00:00',
                   'categories': [
                     {'name': 'Marvel Comic '},
                   ],
                   'small_image': {'url': 'https://tiendapanini.cl/a.png?x=1'},
                   'price_range': {
                     'minimum_price': {
+                      'regular_price': {'value': 20000},
                       'final_price': {'value': 14000, 'currency': 'CLP'},
                     },
                   },
@@ -149,10 +151,93 @@ void main() {
     expect(c.number, 333);
     expect(c.store, 'cl');
     expect(c.currency, 'CLP');
+    expect(c.price, 14000);
+    expect(c.regularPrice, 20000);
+    expect(c.promoEnds, '2099-12-18');
+    expect(c.discountPercent, 30);
     expect(c.categories, ['Marvel Comic']);
     expect(c.storeUrl, 'https://tiendapanini.cl/100-marvel-333');
     expect(requests.every((r) => r.headers['Store'] == 'chile'), isTrue);
     expect(mexico.skuPrefix, '');
+  });
+
+  test('promociones del carrito: lee el descuento de cada cómic', () async {
+    final carts = <String, List<String>>{};
+    final client = MockClient((req) async {
+      final body = jsonDecode(req.body) as Map<String, dynamic>;
+      final query = body['query'] as String;
+      final vars = body['variables'] as Map<String, dynamic>;
+      Map<String, dynamic> data;
+      if (query.contains('createEmptyCart')) {
+        data = {'createEmptyCart': 'cart${carts.length}'};
+        carts['cart${carts.length}'] = [];
+      } else if (query.contains('addProductsToCart')) {
+        // La tienda no encuentra X9: no se agrega y la respuesta no trae
+        // descuentos (por eso el carrito se lee aparte).
+        final skus = [
+          for (final i in vars['items'] as List) i['sku'] as String,
+        ];
+        carts[vars['cart']]!.addAll(skus.where((s) => s != 'X9'));
+        data = {
+          'addProductsToCart': {
+            'user_errors': [
+              if (skus.contains('X9')) {'message': 'No existe X9'},
+            ],
+          },
+        };
+      } else {
+        Map<String, dynamic> item(String sku, double total, List discounts) => {
+          'product': {'sku': sku},
+          'prices': {
+            'row_total': {'value': total},
+            'discounts': discounts,
+          },
+        };
+        data = {
+          'cart': {
+            'items': [
+              for (final sku in carts[vars['cart']]!)
+                switch (sku) {
+                  'A1' => item('A1', 899, [
+                    {
+                      'label': '30% - Descuentos espeluznantes ',
+                      'amount': {'value': 269.7},
+                    },
+                  ]),
+                  'B2' => item('B2', 139, []),
+                  _ => item(sku, 100, [
+                    {
+                      'label': '10% - Preventa',
+                      'amount': {'value': 10},
+                    },
+                    {
+                      'label': '10% - Descuentos espeluznantes',
+                      'amount': {'value': 9},
+                    },
+                  ]),
+                },
+            ],
+          },
+        };
+      }
+      return _utf8Response(jsonEncode({'data': data}), 200);
+    });
+    final scraper = PaniniScraper(client: client, store: chile);
+    final comics = [
+      for (final s in ['A1', 'B2', 'X9', 'C3'])
+        Comic(sku: 'cl:$s', name: s, store: 'cl'),
+    ];
+    final result = await scraper.checkCartPromos(comics);
+    // Sin prefijo para la tienda; un carrito para los 3.
+    expect(carts.values.single, ['A1', 'B2', 'C3']);
+    // X9 sí cuenta como revisado: la tienda no lo vende, no tiene promoción.
+    expect(result.checked, {'cl:A1', 'cl:B2', 'cl:X9', 'cl:C3'});
+    expect(result.promos.keys, unorderedEquals(['cl:A1', 'cl:C3']));
+    expect(result.promos['cl:A1']!.percent, 30);
+    expect(result.promos['cl:A1']!.label, 'Descuentos espeluznantes');
+    expect(result.promos['cl:C3']!.percent, 19);
+    expect(result.promos['cl:C3']!.label, 'Preventa, Descuentos espeluznantes');
+    expect(result.warning, isNull);
   });
 }
 

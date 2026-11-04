@@ -17,13 +17,14 @@ Built with Flutter for **Android**, **iOS** and **Windows**. Everything is store
 - **Comic status**: mark each comic as *Wishlist*, *Purchased* or *Owned*.
 - **Availability badges**: *Pre-order*, *Available* or *Sold out*, based on the last catalog update.
 - **Shopping carts**: build several named carts with their total cost, and turn a cart into an order once you buy it.
-- **Orders**: track pending and received orders with the store, carrier and tracking code. Marking an order as received moves its comics to *Owned*.
+- **Orders**: track pending and received orders with the store, carrier and tracking code. When it arrives, drag the comics that came to the right: those move to *Owned* (and, optionally, into a storage location) and the order stays pending until everything arrives.
+- **Storage**: set up where you keep your comics, with places inside places ("Closet 1 › Bin 4"). Each comic has one location, shown in its detail, you can file all owned comics that still have no place in one go, and *Ordenar* lets you drag them inside a location to match their physical order.
 - **Package tracking**: the carrier is detected from the tracking number (Estafeta, DHL, FedEx, UPS…) and a *Track* button opens the carrier's tracking page.
 - **Currency**: prices from every store are converted to the currency you choose (MXN, USD, EUR…) using daily exchange rates.
 - **PDF export** of collections, wishlist, carts, orders and filtered catalog views, with covers, checkboxes, prices and totals.
 - **Offline covers**: covers are cached on the device as small WebP images (~30 KB each), with an optional *Wi-Fi only* download mode.
 - **Backups**: export and import a single user's data as a `.json` file. An automatic backup is saved before every import (the last 3 are kept).
-- **PC ↔ mobile sync without a server**: send your data between devices on the same Wi-Fi network, protected by a 6-digit PIN and AES-256-GCM encryption.
+- **PC ↔ mobile sync without a server**: replace one device's data with the other's, or merge the changes from both, on the same Wi-Fi network, protected by a 6-digit PIN and AES-256-GCM encryption. An icon next to your name shows when there are unsynced changes. On a new device you can receive your data from the login screen, without creating the account first.
 - **Multiple local users**, each with their own collections and statuses.
 
 ## Download (Windows)

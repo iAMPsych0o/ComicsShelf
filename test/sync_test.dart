@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:comics_panini/db/app_database.dart';
 import 'package:comics_panini/models.dart';
+import 'package:comics_panini/services/sync_flow.dart';
 import 'package:comics_panini/services/sync_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -136,12 +137,152 @@ void main() {
       await result;
     }, timeout: const Timeout(Duration(minutes: 2)));
 
+    test(
+      'combinar por la red: va y vuelve, y aplica primero quien pidió',
+      () async {
+        await receiver.stop();
+        receiver = SyncReceiver(
+          deviceName: 'PC de psych0o',
+          announce: false,
+          acceptMerge: true,
+        );
+        await receiver.start();
+        final peer = await sender.peerAt('127.0.0.1:${receiver.port}');
+
+        final pc = AppDatabase.inMemory();
+        final phone = AppDatabase.inMemory();
+        final pcUser = User(id: pc.insertUser('p', 'h', 's'), username: 'p');
+        final phoneUser = User(
+          id: phone.insertUser('p', 'h', 's'),
+          username: 'p',
+        );
+        for (final db in [pc, phone]) {
+          db.upsertComics([
+            const Comic(sku: 'A', name: 'A'),
+            const Comic(sku: 'B', name: 'B'),
+          ]);
+        }
+        final syncId = newSyncId();
+        final data = replacePayload(pc, pcUser.id, syncId);
+        applyReplace(phone, phoneUser, ReceivedSync('PC', data));
+        confirmReplace(pc, pcUser.id, syncId, data, pc.syncRevision(pcUser.id));
+
+        pc.setStatus(pcUser.id, ['A'], ComicStatus.owned);
+        phone.setStatus(phoneUser.id, ['B'], ComicStatus.wishlist);
+
+        // El teléfono pide; la PC todavía no decide.
+        await sender.sendForMerge(
+          peer,
+          receiver.pin,
+          mergePayload(phone, phoneUser.id),
+        );
+        final got = await receiver.received;
+        expect(got.merge, isTrue);
+        expect(
+          () => sender.waitResult(peer, timeout: Duration.zero),
+          throwsA(isA<SyncException>()),
+        );
+
+        final plan = planMerge(pc, pcUser.id, got);
+        await receiver.publishResult(plan.accepted);
+        final reply = await sender.waitResult(peer);
+        applyMergeReply(phone, phoneUser, reply);
+        await sender.acknowledge(peer, ok: true);
+        expect(await receiver.acknowledged, isTrue);
+        applyMerge(pc, pcUser, plan);
+
+        final expected = {'A': ComicStatus.owned, 'B': ComicStatus.wishlist};
+        expect(pc.statuses(pcUser.id), expected);
+        expect(phone.statuses(phoneUser.id), expected);
+        expect(phone.syncId(phoneUser.id), pc.syncId(pcUser.id));
+        expect(pc.hasUnsyncedChanges(pcUser.id), isFalse);
+        expect(phone.hasUnsyncedChanges(phoneUser.id), isFalse);
+      },
+    );
+
+    test('combinar con quien no lo espera se rechaza con un aviso', () async {
+      final peer = await sender.peerAt('127.0.0.1:${receiver.port}');
+      await expectLater(
+        sender.sendForMerge(peer, receiver.pin, {'x': 1}),
+        throwsA(
+          isA<SyncException>().having(
+            (e) => e.message,
+            'message',
+            contains('Combinar'),
+          ),
+        ),
+      );
+    });
+
+    test('el que envía se entera si rechazaron el reemplazo', () async {
+      final peer = await sender.peerAt('127.0.0.1:${receiver.port}');
+      await sender.send(peer, receiver.pin, {'x': 1});
+      await receiver.received;
+      await receiver.publishResult({'accepted': false});
+      expect((await sender.waitResult(peer))['accepted'], isFalse);
+    });
+
     test('dirección sin ComicShelf da un error claro', () async {
       expect(
         () => sender.peerAt('no es una direccion'),
         throwsA(isA<SyncException>()),
       );
       expect(() => sender.peerAt('127.0.0.1:1'), throwsA(isA<SyncException>()));
+    });
+  });
+
+  group('cambios sin sincronizar', () {
+    late AppDatabase db;
+    late int user;
+
+    setUp(() {
+      db = AppDatabase.inMemory();
+      user = db.insertUser('psych0o', 'hash', 'sal');
+      db.upsertComics([const Comic(sku: 'S1', name: 'Uno')]);
+      db.markSynced(user);
+    });
+    tearDown(() => db.close());
+
+    test('un cambio del usuario queda pendiente hasta sincronizar', () {
+      expect(db.hasUnsyncedChanges(user), isFalse);
+      db.setStatus(user, ['S1'], ComicStatus.owned);
+      expect(db.hasUnsyncedChanges(user), isTrue);
+      db.markSynced(user);
+      expect(db.hasUnsyncedChanges(user), isFalse);
+    });
+
+    test('borrar en cascada cuenta y no toca a otros usuarios', () {
+      final other = db.insertUser('otro', 'hash', 'sal');
+      db.markSynced(other);
+      final id = db.createCollection(user, 'Batman');
+      db.addToCollection(user, id, ['S1']);
+      db.markSynced(user);
+
+      db.deleteCollection(user, id);
+      expect(db.hasUnsyncedChanges(user), isTrue);
+      expect(db.hasUnsyncedChanges(other), isFalse);
+    });
+
+    test('un cómic nuevo cuenta; actualizar uno que ya existe, no', () {
+      db.upsertComics([const Comic(sku: 'S1', name: 'Uno', price: 10)]);
+      expect(db.hasUnsyncedChanges(user), isFalse);
+      db.upsertComics([const Comic(sku: 'S2', name: 'Dos')]);
+      expect(db.hasUnsyncedChanges(user), isTrue);
+    });
+
+    test('lo que cambia mientras se envía sigue pendiente', () {
+      final revision = db.syncRevision(user);
+      db.setStatus(user, ['S1'], ComicStatus.owned);
+      db.markSynced(user, revision: revision);
+      expect(db.hasUnsyncedChanges(user), isTrue);
+    });
+
+    test('restaurar un respaldo no cuenta como sincronizar', () {
+      db.setStatus(user, ['S1'], ComicStatus.owned);
+      final backup = db.exportUserData(user);
+      db.markSynced(user);
+      db.importUserData(user, backup);
+      expect(db.hasUnsyncedChanges(user), isTrue);
     });
   });
 }

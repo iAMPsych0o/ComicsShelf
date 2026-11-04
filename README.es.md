@@ -17,13 +17,14 @@ Hecha con Flutter para **Android**, **iOS** y **Windows**. Todo se guarda localm
 - **Estado de cada cómic**: márcalo como *Wishlist*, *Comprado* u *Obtenido*.
 - **Etiquetas de disponibilidad**: *Preventa*, *Disponible* o *Agotado*, según la última actualización del catálogo.
 - **Carritos de compra**: arma varios carritos con nombre y su costo total, y conviértelos en pedido cuando los compres.
-- **Pedidos**: sigue tus pedidos pendientes y recibidos con la tienda, la paquetería y el código de envío. Al marcar un pedido como recibido, sus cómics pasan a *Obtenido*.
+- **Pedidos**: sigue tus pedidos pendientes y recibidos con la tienda, la paquetería y el código de envío. Al recibirlo, arrastras a la derecha los cómics que llegaron: esos pasan a *Obtenido* (y, si quieres, a una ubicación) y el pedido sigue pendiente hasta que llegue todo.
+- **Almacenamiento**: da de alta dónde guardas tus cómics, con lugares dentro de otros ("Closet 1 › Bin 4"). Cada cómic tiene una ubicación, visible en su ficha, puedes acomodar de una vez los obtenidos que aún no tienen lugar y, con *Ordenar*, arrastrarlos dentro de la ubicación para que queden en el orden que tienen físicamente.
 - **Rastreo de paquetes**: la paquetería se detecta por el número de guía (Estafeta, DHL, FedEx, UPS…) y el botón *Rastrear* abre su página de rastreo.
 - **Moneda**: los precios de todas las tiendas se convierten a la moneda que elijas (MXN, USD, EUR…) con el tipo de cambio del día.
 - **Exportar a PDF** colecciones, wishlist, carritos, pedidos y vistas filtradas del catálogo, con portadas, casillas para palomear, precios y totales.
 - **Portadas sin conexión**: las portadas se guardan en el dispositivo como imágenes WebP pequeñas (~30 KB cada una), con opción de descargarlas *solo con Wi-Fi*.
 - **Respaldos**: exporta e importa los datos de un usuario en un archivo `.json`. Antes de cada importación se guarda un respaldo automático (se conservan los últimos 3).
-- **Sincronización PC ↔ móvil sin servidor**: envía tus datos entre dispositivos en la misma red Wi-Fi, protegidos con un PIN de 6 dígitos y cifrado AES-256-GCM.
+- **Sincronización PC ↔ móvil sin servidor**: reemplaza los datos de un dispositivo con los del otro, o combina los cambios de ambos, en la misma red Wi-Fi, protegidos con un PIN de 6 dígitos y cifrado AES-256-GCM. Un icono junto a tu nombre avisa cuando hay cambios sin sincronizar. En un dispositivo nuevo puedes recibir tus datos desde el inicio de sesión, sin crear la cuenta antes.
 - **Varios usuarios locales**, cada uno con sus propias colecciones y estados.
 
 ## Descarga (Windows)

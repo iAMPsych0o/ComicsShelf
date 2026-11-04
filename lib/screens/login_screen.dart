@@ -1,7 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../app_scope.dart';
 import '../services/auth_service.dart';
+import 'sync_screen.dart';
+
+bool get _isPhone => Platform.isAndroid || Platform.isIOS;
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -205,6 +210,25 @@ class _LoginScreenState extends State<LoginScreen> {
                           _registering
                               ? '¿Ya tienes cuenta? Inicia sesión'
                               : '¿No tienes cuenta? Crea una',
+                        ),
+                      ),
+                      const Divider(height: 24),
+                      OutlinedButton.icon(
+                        onPressed: _busy
+                            ? null
+                            : () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const ReceiveAtLoginScreen(),
+                                ),
+                              ),
+                        icon: Icon(
+                          _isPhone ? Icons.computer : Icons.phone_android,
+                        ),
+                        label: Text(
+                          _isPhone
+                              ? 'Recibir mis datos de la PC'
+                              : 'Recibir mis datos del teléfono',
                         ),
                       ),
                     ],

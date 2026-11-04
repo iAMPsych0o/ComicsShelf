@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
@@ -20,7 +21,7 @@ class AppDatabase {
   /// los respaldos automáticos antes de importar.
   final String? directory;
 
-  static const _schemaVersion = 7;
+  static const _schemaVersion = 13;
 
   static Future<AppDatabase> open() async {
     final dir = await getApplicationSupportDirectory();
@@ -216,7 +217,170 @@ class AppDatabase {
         _db.execute('ALTER TABLE orders ADD COLUMN carrier TEXT');
       }
     }
+    if (version < 8) {
+      // Ofertas: precio sin descuento y fin de la promoción.
+      final cols = {
+        for (final r in _db.select('PRAGMA table_info(comics)'))
+          r['name'] as String,
+      };
+      if (!cols.contains('regular_price')) {
+        _db.execute('ALTER TABLE comics ADD COLUMN regular_price REAL');
+      }
+      if (!cols.contains('promo_ends')) {
+        _db.execute('ALTER TABLE comics ADD COLUMN promo_ends TEXT');
+      }
+    }
+    if (version < 9) {
+      // Promociones que la tienda aplica solo en el carrito.
+      final cols = {
+        for (final r in _db.select('PRAGMA table_info(comics)'))
+          r['name'] as String,
+      };
+      if (!cols.contains('cart_discount')) {
+        _db.execute('ALTER TABLE comics ADD COLUMN cart_discount REAL');
+      }
+      if (!cols.contains('cart_promo')) {
+        _db.execute('ALTER TABLE comics ADD COLUMN cart_promo TEXT');
+      }
+    }
+    if (version < 10) {
+      // Almacenamiento: lugares (anidables) y dónde está guardado cada cómic.
+      _db.execute('''
+        CREATE TABLE IF NOT EXISTS locations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          parent_id INTEGER REFERENCES locations(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS comic_locations (
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          sku TEXT NOT NULL REFERENCES comics(sku) ON DELETE CASCADE,
+          location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+          stored_at TEXT NOT NULL,
+          PRIMARY KEY (user_id, sku)
+        );
+        CREATE INDEX IF NOT EXISTS idx_comic_locations_location
+          ON comic_locations(location_id);
+      ''');
+    }
+    if (version < 11) {
+      // Orden físico dentro de un lugar (null = sin acomodar a mano).
+      final cols = {
+        for (final r in _db.select('PRAGMA table_info(comic_locations)'))
+          r['name'] as String,
+      };
+      if (!cols.contains('position')) {
+        _db.execute('ALTER TABLE comic_locations ADD COLUMN position INTEGER');
+      }
+    }
+    if (version < 12) {
+      _createSyncTracking();
+    }
+    if (version < 13) {
+      _addSyncIdentity();
+    }
     _db.execute('PRAGMA user_version = $_schemaVersion');
+  }
+
+  /// Lleva la cuenta de los cambios de cada usuario con triggers, para que
+  /// cualquier escritura cuente sin tener que avisar desde cada método.
+  /// Hay cambios sin sincronizar si `revision` difiere de `synced_revision`.
+  void _createSyncTracking() {
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_state (
+        user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        revision INTEGER NOT NULL DEFAULT 0,
+        synced_revision INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT OR IGNORE INTO sync_state (user_id) SELECT id FROM users;
+      CREATE TRIGGER IF NOT EXISTS sync_user_created AFTER INSERT ON users
+      BEGIN
+        INSERT OR IGNORE INTO sync_state (user_id) VALUES (NEW.id);
+      END;
+      -- Los cómics nuevos también viajan al sincronizar y el catálogo es de
+      -- todos los usuarios. Actualizar los que ya existen no cuenta: el
+      -- destino no los cambia.
+      CREATE TRIGGER IF NOT EXISTS sync_comic_added AFTER INSERT ON comics
+      BEGIN
+        UPDATE sync_state SET revision = revision + 1;
+      END;
+    ''');
+    // Tabla → cómo llegar a su usuario desde una fila (`row` es NEW u OLD).
+    // Al borrar en cascada el padre ya no está: lo cuenta el trigger del padre.
+    final owners = <String, String Function(String row)>{
+      'collections': (row) => '$row.user_id',
+      'comic_status': (row) => '$row.user_id',
+      'orders': (row) => '$row.user_id',
+      'carts': (row) => '$row.user_id',
+      'locations': (row) => '$row.user_id',
+      'comic_locations': (row) => '$row.user_id',
+      'collection_items': (row) =>
+          '(SELECT user_id FROM collections WHERE id = $row.collection_id)',
+      'order_items': (row) =>
+          '(SELECT user_id FROM orders WHERE id = $row.order_id)',
+      'cart_items': (row) =>
+          '(SELECT user_id FROM carts WHERE id = $row.cart_id)',
+    };
+    owners.forEach((table, owner) {
+      for (final (event, row) in const [
+        ('INSERT', 'NEW'),
+        ('UPDATE', 'NEW'),
+        ('DELETE', 'OLD'),
+      ]) {
+        _db.execute('''
+          CREATE TRIGGER IF NOT EXISTS sync_${table}_${event.toLowerCase()}
+          AFTER $event ON $table
+          BEGIN
+            UPDATE sync_state SET revision = revision + 1
+            WHERE user_id = ${owner(row)};
+          END;
+        ''');
+      }
+    });
+  }
+
+  /// Da un identificador común a lo que se reconoce entre dispositivos (los
+  /// ids locales no coinciden y `created_at` se repite) y guarda la copia base
+  /// de la última sincronización, contra la que se combina.
+  void _addSyncIdentity() {
+    // Asignar los uid cuenta como cambio para los triggers, pero no lo es.
+    final upToDate = _db
+        .select(
+          'SELECT user_id FROM sync_state WHERE revision = synced_revision',
+        )
+        .map((r) => r['user_id'] as int)
+        .toList();
+    for (final table in const ['collections', 'orders', 'carts', 'locations']) {
+      final cols = {
+        for (final r in _db.select('PRAGMA table_info($table)'))
+          r['name'] as String,
+      };
+      if (!cols.contains('uid')) {
+        _db.execute('ALTER TABLE $table ADD COLUMN uid TEXT');
+      }
+      _db.execute('''
+        UPDATE $table SET uid = lower(hex(randomblob(16))) WHERE uid IS NULL;
+        CREATE TRIGGER IF NOT EXISTS uid_$table AFTER INSERT ON $table
+        WHEN NEW.uid IS NULL
+        BEGIN
+          UPDATE $table SET uid = lower(hex(randomblob(16))) WHERE id = NEW.id;
+        END;
+      ''');
+    }
+    final cols = {
+      for (final r in _db.select('PRAGMA table_info(sync_state)'))
+        r['name'] as String,
+    };
+    if (!cols.contains('sync_id')) {
+      _db.execute('ALTER TABLE sync_state ADD COLUMN sync_id TEXT');
+    }
+    if (!cols.contains('base')) {
+      _db.execute('ALTER TABLE sync_state ADD COLUMN base TEXT');
+    }
+    for (final user in upToDate) {
+      markSynced(user);
+    }
   }
 
   /// Ejecuta [body] en una transacción (o dentro de la que ya esté abierta).
@@ -292,6 +456,7 @@ class AppDatabase {
     ComicStatus? status,
     Availability? availability,
     String? store,
+    int? minDiscount,
     int limit = 500,
     int offset = 0,
   }) {
@@ -328,6 +493,10 @@ class AppDatabase {
       where.add('comics.store = ?');
       args.add(store);
     }
+    if (minDiscount != null) {
+      where.add('$_discountSql >= ?');
+      args.add(minDiscount);
+    }
     final sql = StringBuffer('SELECT comics.* FROM $from');
     if (where.isNotEmpty) sql.write(' WHERE ${where.join(' AND ')}');
     sql.write(' ORDER BY series COLLATE NOCASE, number, name COLLATE NOCASE');
@@ -339,8 +508,8 @@ class AppDatabase {
         .toList();
   }
 
-  /// Condición SQL de cada filtro de disponibilidad. La de preventa es la
-  /// misma regla que [Comic.isPreorder].
+  /// Condición SQL de cada filtro de disponibilidad. Las de preventa y oferta
+  /// son la misma regla que [Comic.isPreorder] y [Comic.isOnSale].
   static String _availabilitySql(Availability a) => switch (a) {
     Availability.available => "comics.stock_status = 'IN_STOCK'",
     Availability.soldOut => "comics.stock_status = 'OUT_OF_STOCK'",
@@ -348,7 +517,33 @@ class AppDatabase {
       "(('|' || comics.categories || '|') LIKE '%|Preventas|%' "
           "OR ('|' || comics.categories || '|') LIKE '%|Preventa|%' "
           "OR comics.release_date > date('now', 'localtime'))",
+    Availability.onSale =>
+      '(comics.cart_discount > 0 OR (comics.regular_price > comics.price '
+          "AND (comics.promo_ends IS NULL "
+          "OR comics.promo_ends >= date('now', 'localtime'))))",
   };
+
+  /// Descuento total redondeado de cada cómic: del precio de lista (el
+  /// normal si la oferta del catálogo sigue vigente) a lo que se paga con el
+  /// descuento del carrito. Misma regla que [Comic.discountPercent].
+  static const _discountSql =
+      'ROUND(100 * (1 - comics.price '
+      '* (100 - COALESCE(comics.cart_discount, 0)) / 100 '
+      '/ (CASE WHEN comics.regular_price > comics.price '
+      'AND (comics.promo_ends IS NULL '
+      "OR comics.promo_ends >= date('now', 'localtime')) "
+      'THEN comics.regular_price ELSE comics.price END)))';
+
+  /// Cuántos cómics tienen al menos cada descuento de [discountSteps].
+  Map<int, int> discountCounts() {
+    final r = _db
+        .select(
+          'SELECT ${[for (final d in discountSteps) 'COALESCE(SUM(CASE WHEN discount >= $d THEN 1 END), 0) AS d$d'].join(', ')} '
+          'FROM (SELECT $_discountSql AS discount FROM comics)',
+        )
+        .first;
+    return {for (final d in discountSteps) d: r['d$d'] as int};
+  }
 
   /// Cuántos cómics del catálogo hay con cada disponibilidad.
   Map<Availability, int> availabilityCounts() => {
@@ -415,19 +610,56 @@ class AppDatabase {
       .map((r) => r['sku'] as String)
       .toSet();
 
+  /// Cómics de [store] que se pueden meter al carrito para revisar sus
+  /// promociones (los agotados no se pueden agregar).
+  List<Comic> cartPromoCandidates(String store) => _db
+      .select(
+        "SELECT * FROM comics WHERE store = ? AND stock_status = 'IN_STOCK' "
+        'ORDER BY sku',
+        [store],
+      )
+      .map((r) => Comic.fromRow(r))
+      .toList();
+
+  /// Guarda el resultado de una revisión de promociones del carrito: los
+  /// [checked] que no están en [promos] quedan sin promoción. Los cómics que
+  /// no se revisaron no cambian. (La actualización normal del catálogo no
+  /// toca estas columnas.)
+  void setCartPromos(
+    Iterable<String> checked,
+    Map<String, ({double percent, String label})> promos,
+  ) {
+    _inTx(() {
+      final stmt = _db.prepare(
+        'UPDATE comics SET cart_discount = ?, cart_promo = ? WHERE sku = ?',
+      );
+      try {
+        for (final sku in checked) {
+          final p = promos[sku];
+          stmt.execute([p?.percent, p?.label, sku]);
+        }
+      } finally {
+        stmt.close();
+      }
+    });
+  }
+
   /// Inserta o actualiza los cómics seleccionados en la revisión del scraping.
   void upsertComics(List<Comic> comics) {
     final stmt = _db.prepare('''
       INSERT INTO comics (sku, name, url_key, series, series_code, number,
-        release_date, isbn, pages, contains, price, image_url, categories,
-        item_type, stock_status, store, currency, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        release_date, isbn, pages, contains, price, regular_price, promo_ends,
+        image_url, categories, item_type, stock_status, store, currency,
+        updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(sku) DO UPDATE SET
         name = excluded.name, url_key = excluded.url_key,
         series = excluded.series, series_code = excluded.series_code,
         number = excluded.number, release_date = excluded.release_date,
         isbn = excluded.isbn, pages = excluded.pages,
         contains = excluded.contains, price = excluded.price,
+        regular_price = excluded.regular_price,
+        promo_ends = excluded.promo_ends,
         image_url = excluded.image_url, categories = excluded.categories,
         item_type = excluded.item_type, stock_status = excluded.stock_status,
         store = excluded.store, currency = excluded.currency,
@@ -450,6 +682,8 @@ class AppDatabase {
           r['pages'],
           r['contains'],
           r['price'],
+          r['regular_price'],
+          r['promo_ends'],
           r['image_url'],
           r['categories'],
           r['item_type'],
@@ -889,6 +1123,30 @@ class AppDatabase {
     _syncLooseOrder(userId);
   });
 
+  /// Recepción parcial: [skus] llegaron y pasan a "Obtenido"; el resto sigue
+  /// "Comprado". Si ya llegó todo, el pedido queda recibido. Devuelve si se
+  /// cerró el pedido.
+  bool receiveOrderItems(int userId, int orderId, Iterable<String> skus) =>
+      _inTx(() {
+        final o = order(userId, orderId);
+        if (o == null || o.received) return false;
+        final items = orderItems(userId, orderId);
+        final inOrder = {for (final i in items) i.comic.sku};
+        final arrived = skus.where(inOrder.contains).toSet();
+        _writeStatus(userId, arrived.toList(), ComicStatus.owned);
+        final all = items.every(
+          (i) => arrived.contains(i.comic.sku) || i.status == ComicStatus.owned,
+        );
+        if (all) {
+          _db.execute(
+            'UPDATE orders SET received_at = ? WHERE id = ? AND user_id = ?',
+            [_now(), orderId, userId],
+          );
+        }
+        _syncLooseOrder(userId);
+        return all;
+      });
+
   /// Borra un pedido. Si estaba pendiente, sus cómics vuelven a Wishlist.
   void deleteOrder(int userId, int orderId) => _inTx(() {
     final o = order(userId, orderId);
@@ -1080,8 +1338,9 @@ class AppDatabase {
     String column,
     int userId,
     int id,
-    String parent,
-  ) => _db
+    String parent, {
+    String firstOrder = '',
+  }) => _db
       .select(
         '''
         SELECT k.*, s.status AS user_status FROM $table i
@@ -1089,7 +1348,8 @@ class AppDatabase {
         JOIN comics k ON k.sku = i.sku
         LEFT JOIN comic_status s ON s.user_id = ? AND s.sku = i.sku
         WHERE i.$column = ?
-        ORDER BY k.series COLLATE NOCASE, k.number, k.name COLLATE NOCASE
+        ORDER BY $firstOrder
+          k.series COLLATE NOCASE, k.number, k.name COLLATE NOCASE
       ''',
         [userId, userId, id],
       )
@@ -1146,6 +1406,232 @@ class AppDatabase {
       .map((r) => CollectionItem(comic: Comic.fromRow(r), status: status))
       .toList();
 
+  // ----------------------------------------------------------- almacenamiento
+
+  /// Separador entre un lugar y lo que contiene: "Closet 1 › Bin 4".
+  static const locationSeparator = ' › ';
+
+  /// Lugares del usuario en orden de árbol (cada uno seguido de lo que
+  /// contiene), alfabético en cada nivel.
+  List<StorageLocation> locations(int userId) {
+    final rows = _db.select(
+      '''
+      SELECT l.id, l.parent_id, l.name, COUNT(c.sku) AS n
+      FROM locations l
+      LEFT JOIN comic_locations c ON c.location_id = l.id
+      WHERE l.user_id = ?
+      GROUP BY l.id
+      ORDER BY l.name COLLATE NOCASE, l.id
+    ''',
+      [userId],
+    );
+    final children = <int?, List<Row>>{};
+    for (final r in rows) {
+      (children[r['parent_id'] as int?] ??= []).add(r);
+    }
+    int total(Row r) =>
+        (r['n'] as int) +
+        (children[r['id']] ?? const []).fold(0, (s, c) => s + total(c));
+    final result = <StorageLocation>[];
+    void walk(int? parent, String prefix, int depth) {
+      for (final r in children[parent] ?? const <Row>[]) {
+        final path = '$prefix${r['name']}';
+        result.add(
+          StorageLocation(
+            id: r['id'] as int,
+            name: r['name'] as String,
+            parentId: parent,
+            path: path,
+            depth: depth,
+            count: r['n'] as int,
+            totalCount: total(r),
+          ),
+        );
+        walk(r['id'] as int, '$path$locationSeparator', depth + 1);
+      }
+    }
+
+    walk(null, '', 0);
+    return result;
+  }
+
+  bool _ownsLocation(int userId, int locationId) => _db.select(
+    'SELECT 1 FROM locations WHERE id = ? AND user_id = ?',
+    [locationId, userId],
+  ).isNotEmpty;
+
+  /// Crea un lugar, dentro de [parentId] si se indica. Devuelve su id.
+  int createLocation(int userId, String name, {int? parentId}) {
+    if (parentId != null && !_ownsLocation(userId, parentId)) {
+      throw ArgumentError('Ubicación inexistente');
+    }
+    _db.execute(
+      'INSERT INTO locations (user_id, parent_id, name, created_at) '
+      'VALUES (?, ?, ?, ?)',
+      [userId, parentId, name.trim(), _now()],
+    );
+    return _db.lastInsertRowId;
+  }
+
+  void renameLocation(int userId, int locationId, String name) => _db.execute(
+    'UPDATE locations SET name = ? WHERE id = ? AND user_id = ?',
+    [name.trim(), locationId, userId],
+  );
+
+  /// Borra un lugar y lo que contiene; sus cómics quedan sin ubicación.
+  void deleteLocation(int userId, int locationId) => _db.execute(
+    'DELETE FROM locations WHERE id = ? AND user_id = ?',
+    [locationId, userId],
+  );
+
+  /// Cómics guardados directamente en un lugar: primero los acomodados a mano
+  /// y después los demás, por serie y número.
+  List<CollectionItem> locationItems(int userId, int locationId) => _itemsOf(
+    'comic_locations',
+    'location_id',
+    userId,
+    locationId,
+    'locations',
+    firstOrder: 'i.position IS NULL, i.position,',
+  );
+
+  /// Si los cómics de un lugar ya se acomodaron a mano.
+  bool hasManualOrder(int userId, int locationId) => _db.select(
+    'SELECT 1 FROM comic_locations WHERE user_id = ? AND location_id = ? '
+    'AND position IS NOT NULL LIMIT 1',
+    [userId, locationId],
+  ).isNotEmpty;
+
+  /// Guarda el orden físico de los cómics de un lugar.
+  void reorderLocation(int userId, int locationId, List<String> skus) =>
+      _inTx(() {
+        for (final (position, sku) in skus.indexed) {
+          _db.execute(
+            'UPDATE comic_locations SET position = ? '
+            'WHERE user_id = ? AND location_id = ? AND sku = ?',
+            [position, userId, locationId, sku],
+          );
+        }
+      });
+
+  /// Lugar de cada cómic guardado: sku → id del lugar.
+  Map<String, int> skuLocations(int userId) => {
+    for (final r in _db.select(
+      'SELECT sku, location_id FROM comic_locations WHERE user_id = ?',
+      [userId],
+    ))
+      r['sku'] as String: r['location_id'] as int,
+  };
+
+  /// Guarda [skus] en un lugar (cada cómic está en uno solo, así que los que
+  /// estaban en otro se mueven). Con [locationId] null quedan sin ubicación.
+  /// Devuelve cuántos venían de otro lugar.
+  int setComicLocation(int userId, Iterable<String> skus, int? locationId) =>
+      _inTx(() {
+        if (locationId != null && !_ownsLocation(userId, locationId)) return 0;
+        final before = skuLocations(userId);
+        var moved = 0;
+        for (final sku in skus.toSet()) {
+          final from = before[sku];
+          if (from == locationId) continue;
+          if (from != null && locationId != null) moved++;
+          if (locationId == null) {
+            _db.execute(
+              'DELETE FROM comic_locations WHERE user_id = ? AND sku = ?',
+              [userId, sku],
+            );
+          } else {
+            _db.execute(
+              'INSERT OR REPLACE INTO comic_locations '
+              '(user_id, sku, location_id, stored_at) VALUES (?, ?, ?, ?)',
+              [userId, sku, locationId, _now()],
+            );
+          }
+        }
+        return moved;
+      });
+
+  /// Cómics obtenidos que todavía no tienen lugar.
+  List<CollectionItem> ownedWithoutLocation(int userId) => _db
+      .select(
+        '''
+        SELECT c.* FROM comic_status s
+        JOIN comics c ON c.sku = s.sku
+        LEFT JOIN comic_locations l ON l.user_id = s.user_id AND l.sku = s.sku
+        WHERE s.user_id = ? AND s.status = 'owned' AND l.sku IS NULL
+        ORDER BY c.series COLLATE NOCASE, c.number, c.name COLLATE NOCASE
+      ''',
+        [userId],
+      )
+      .map(
+        (r) =>
+            CollectionItem(comic: Comic.fromRow(r), status: ComicStatus.owned),
+      )
+      .toList();
+
+  // ------------------------------------------------------------ sincronización
+
+  /// Número de cambios de [userId]; guardarlo antes de enviar permite no dar
+  /// por sincronizado lo que cambie mientras tanto.
+  int syncRevision(int userId) {
+    final rs = _db.select('SELECT revision FROM sync_state WHERE user_id = ?', [
+      userId,
+    ]);
+    return rs.isEmpty ? 0 : rs.first['revision'] as int;
+  }
+
+  /// Si [userId] tiene cambios que el otro dispositivo aún no recibió.
+  bool hasUnsyncedChanges(int userId) => _db.select(
+    'SELECT 1 FROM sync_state WHERE user_id = ? '
+    'AND revision <> synced_revision',
+    [userId],
+  ).isNotEmpty;
+
+  /// Marca como sincronizado todo hasta [revision] (por omisión, lo actual).
+  void markSynced(int userId, {int? revision}) {
+    _db.execute(
+      'UPDATE sync_state SET synced_revision = COALESCE(?, revision) '
+      'WHERE user_id = ?',
+      [revision, userId],
+    );
+  }
+
+  /// Identificador de la última sincronización de [userId] (null si nunca
+  /// se ha hecho una con copia base).
+  String? syncId(int userId) {
+    final rs = _db.select('SELECT sync_id FROM sync_state WHERE user_id = ?', [
+      userId,
+    ]);
+    return rs.isEmpty ? null : rs.first['sync_id'] as String?;
+  }
+
+  /// Cómo quedaron los datos en la última sincronización.
+  Map<String, Object?>? syncBase(int userId) {
+    final rs = _db.select('SELECT base FROM sync_state WHERE user_id = ?', [
+      userId,
+    ]);
+    final base = rs.isEmpty ? null : rs.first['base'] as String?;
+    return base == null ? null : (jsonDecode(base) as Map).cast();
+  }
+
+  /// Registra una sincronización terminada y su copia base.
+  void saveSyncBase(
+    int userId,
+    String syncId,
+    Map<String, Object?> base, {
+    int? revision,
+  }) {
+    _db.execute(
+      'UPDATE sync_state SET sync_id = ?, base = ?, '
+      'synced_revision = COALESCE(?, revision) WHERE user_id = ?',
+      [syncId, jsonEncode(base), revision, userId],
+    );
+  }
+
+  /// Avisa cuando puede haber cambiado [hasUnsyncedChanges].
+  Stream<void> get syncStateChanges =>
+      _db.updates.where((u) => u.tableName == 'sync_state');
+
   // ---------------------------------------------------------------- respaldos
 
   /// Formato del archivo de respaldo (subir si cambia su estructura).
@@ -1163,10 +1649,11 @@ class AppDatabase {
 
     final collections = [
       for (final c in _db.select(
-        'SELECT id, name, created_at FROM collections WHERE user_id = ? ORDER BY id',
+        'SELECT id, uid, name, created_at FROM collections WHERE user_id = ? ORDER BY id',
         [userId],
       ))
         {
+          'uid': c['uid'],
           'name': c['name'],
           'created_at': c['created_at'],
           'items': [
@@ -1191,6 +1678,7 @@ class AppDatabase {
         [userId],
       ))
         {
+          'uid': o['uid'],
           'store': o['store'],
           'tracking': o['tracking'],
           'carrier': o['carrier'],
@@ -1209,10 +1697,11 @@ class AppDatabase {
     ];
     final carts = [
       for (final c in _db.select(
-        'SELECT id, name, created_at FROM carts WHERE user_id = ? ORDER BY id',
+        'SELECT id, uid, name, created_at FROM carts WHERE user_id = ? ORDER BY id',
         [userId],
       ))
         {
+          'uid': c['uid'],
           'name': c['name'],
           'created_at': c['created_at'],
           'items': [
@@ -1224,7 +1713,37 @@ class AppDatabase {
           ],
         },
     ];
+    // Los lugares se ligan por su id de este dispositivo; al importar se
+    // vuelven a crear con ids nuevos.
+    final locations = [
+      for (final l in _db.select(
+        'SELECT id, uid, parent_id, name, created_at FROM locations '
+        'WHERE user_id = ? ORDER BY id',
+        [userId],
+      ))
+        {
+          'id': l['id'],
+          'uid': l['uid'],
+          'parent': l['parent_id'],
+          'name': l['name'],
+          'created_at': l['created_at'],
+        },
+    ];
+    final stored = [
+      for (final s in _db.select(
+        'SELECT sku, location_id, stored_at, position FROM comic_locations '
+        'WHERE user_id = ? ORDER BY sku',
+        [userId],
+      ))
+        {
+          'sku': s['sku'],
+          'location': s['location_id'],
+          'stored_at': s['stored_at'],
+          'position': s['position'],
+        },
+    ];
     final skus = {
+      for (final s in stored) s['sku'] as String,
       for (final c in collections)
         for (final i in c['items'] as List) (i as Map)['sku'] as String,
       for (final s in statuses) s['sku'] as String,
@@ -1255,6 +1774,8 @@ class AppDatabase {
       'statuses': statuses,
       'orders': orders,
       'carts': carts,
+      'locations': locations,
+      'stored': stored,
       'comics': comics,
     };
   }
@@ -1287,10 +1808,16 @@ class AppDatabase {
     if (collections is! List || statuses is! List || comics is! List) {
       throw BackupException('El respaldo está incompleto o dañado.');
     }
-    // Pedidos y carritos son opcionales (respaldos de versiones anteriores).
+    // Pedidos, carritos y lugares son opcionales (respaldos de versiones
+    // anteriores).
     final orders = data['orders'] ?? const [];
     final carts = data['carts'] ?? const [];
-    if (orders is! List || carts is! List) {
+    final locations = data['locations'] ?? const [];
+    final stored = data['stored'] ?? const [];
+    if (orders is! List ||
+        carts is! List ||
+        locations is! List ||
+        stored is! List) {
       throw BackupException('El respaldo está incompleto o dañado.');
     }
     final counts = <String, int>{};
@@ -1310,6 +1837,7 @@ class AppDatabase {
       wishlist: counts['wishlist'] ?? 0,
       orders: orders.length,
       carts: carts.length,
+      locations: locations.length,
     );
   }
 
@@ -1342,12 +1870,19 @@ class AppDatabase {
       _db.execute('DELETE FROM comic_status WHERE user_id = ?', [userId]);
       _db.execute('DELETE FROM orders WHERE user_id = ?', [userId]);
       _db.execute('DELETE FROM carts WHERE user_id = ?', [userId]);
+      _db.execute('DELETE FROM locations WHERE user_id = ?', [userId]);
 
       for (final raw in data['collections'] as List) {
         final c = raw as Map;
         _db.execute(
-          'INSERT INTO collections (user_id, name, created_at) VALUES (?, ?, ?)',
-          [userId, '${c['name'] ?? 'Sin nombre'}', c['created_at'] ?? _now()],
+          'INSERT INTO collections (user_id, uid, name, created_at) '
+          'VALUES (?, ?, ?, ?)',
+          [
+            userId,
+            c['uid'],
+            '${c['name'] ?? 'Sin nombre'}',
+            c['created_at'] ?? _now(),
+          ],
         );
         final id = _db.lastInsertRowId;
         for (final i in (c['items'] as List? ?? const [])) {
@@ -1374,10 +1909,11 @@ class AppDatabase {
       for (final raw in data['orders'] as List? ?? const []) {
         if (raw is! Map) continue;
         _db.execute(
-          'INSERT INTO orders (user_id, store, tracking, carrier, notes, '
-          'auto, created_at, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO orders (user_id, uid, store, tracking, carrier, notes, '
+          'auto, created_at, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
           [
             userId,
+            text(raw['uid']),
             text(raw['store']),
             text(raw['tracking']),
             text(raw['carrier']),
@@ -1399,9 +1935,11 @@ class AppDatabase {
       for (final raw in data['carts'] as List? ?? const []) {
         if (raw is! Map) continue;
         _db.execute(
-          'INSERT INTO carts (user_id, name, created_at) VALUES (?, ?, ?)',
+          'INSERT INTO carts (user_id, uid, name, created_at) '
+          'VALUES (?, ?, ?, ?)',
           [
             userId,
+            text(raw['uid']),
             text(raw['name']) ?? 'Carrito',
             text(raw['created_at']) ?? _now(),
           ],
@@ -1417,6 +1955,53 @@ class AppDatabase {
             [id, sku, text(i['added_at']) ?? _now()],
           );
         }
+      }
+      // Lugares: primero se crean todos y luego se anidan (id del respaldo →
+      // id nuevo).
+      final locationIds = <Object?, int>{};
+      final parents = <int, Object?>{};
+      for (final raw in data['locations'] as List? ?? const []) {
+        if (raw is! Map || raw['id'] == null) continue;
+        _db.execute(
+          'INSERT INTO locations (user_id, uid, name, created_at) '
+          'VALUES (?, ?, ?, ?)',
+          [
+            userId,
+            text(raw['uid']),
+            text(raw['name']) ?? 'Sin nombre',
+            text(raw['created_at']) ?? _now(),
+          ],
+        );
+        locationIds[raw['id']] = _db.lastInsertRowId;
+        if (raw['parent'] != null) parents[_db.lastInsertRowId] = raw['parent'];
+      }
+      for (final e in parents.entries) {
+        final parent = locationIds[e.value];
+        if (parent == null || parent == e.key) continue;
+        _db.execute('UPDATE locations SET parent_id = ? WHERE id = ?', [
+          parent,
+          e.key,
+        ]);
+      }
+      for (final raw in data['stored'] as List? ?? const []) {
+        if (raw is! Map) continue;
+        final sku = raw['sku'];
+        final location = locationIds[raw['location']];
+        if (sku is! String || !known.contains(sku) || location == null) {
+          continue;
+        }
+        _db.execute(
+          'INSERT OR REPLACE INTO comic_locations '
+          '(user_id, sku, location_id, stored_at, position) '
+          'VALUES (?, ?, ?, ?, ?)',
+          [
+            userId,
+            sku,
+            location,
+            text(raw['stored_at']) ?? _now(),
+            raw['position'] is int ? raw['position'] : null,
+          ],
+        );
       }
       // Respaldos sin pedidos: lo "Comprado" queda en "Compras sin pedido".
       _syncLooseOrder(userId);
@@ -1448,6 +2033,7 @@ class BackupSummary {
   final int wishlist;
   final int orders;
   final int carts;
+  final int locations;
 
   const BackupSummary({
     required this.username,
@@ -1459,5 +2045,6 @@ class BackupSummary {
     required this.wishlist,
     this.orders = 0,
     this.carts = 0,
+    this.locations = 0,
   });
 }

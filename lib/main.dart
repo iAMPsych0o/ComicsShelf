@@ -80,9 +80,23 @@ final appTheme = ThemeData(
     indicatorColor: brandRed,
     selectedIconTheme: IconThemeData(color: Colors.white),
   ),
-  navigationBarTheme: const NavigationBarThemeData(
-    backgroundColor: Color(0xFF000000),
+  navigationBarTheme: NavigationBarThemeData(
+    backgroundColor: const Color(0xFF000000),
     indicatorColor: brandRed,
+    // Seis secciones en la barra del teléfono: letra un poco más chica para
+    // que "Colecciones" quepa en un renglón.
+    labelTextStyle: WidgetStateProperty.resolveWith(
+      (states) => TextStyle(
+        fontSize: 11,
+        letterSpacing: 0,
+        fontWeight: states.contains(WidgetState.selected)
+            ? FontWeight.w700
+            : FontWeight.w500,
+        color: states.contains(WidgetState.selected)
+            ? Colors.white
+            : const Color(0xFFBDBDBD),
+      ),
+    ),
   ),
   // Los botones de texto usan un rojo más claro para leerse bien sobre negro.
   textButtonTheme: TextButtonThemeData(

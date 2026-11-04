@@ -41,6 +41,8 @@ class _CatalogScreenState extends State<CatalogScreen> {
   ComicStatus? _statusFilter;
   Availability? _availability;
   String? _store;
+  int? _minDiscount;
+  Map<int, int> _discountCounts = {};
   Map<String, int> _storeCounts = {};
   Map<Availability, int> _availabilityCounts = {};
   List<Comic> _comics = [];
@@ -85,6 +87,7 @@ class _CatalogScreenState extends State<CatalogScreen> {
       status: _statusFilter,
       availability: _availability,
       store: _store,
+      minDiscount: _minDiscount,
       limit: _pageSize + 1,
       offset: offset,
     );
@@ -104,6 +107,7 @@ class _CatalogScreenState extends State<CatalogScreen> {
       _statuses = scope.db.statuses(scope.user.id);
       _statusCounts = scope.db.catalogStatusCounts(scope.user.id);
       _availabilityCounts = scope.db.availabilityCounts();
+      _discountCounts = scope.db.discountCounts();
       _storeCounts = scope.db.storeCounts();
     });
   }
@@ -151,11 +155,13 @@ class _CatalogScreenState extends State<CatalogScreen> {
       status: _statusFilter,
       availability: _availability,
       store: _store,
+      minDiscount: _minDiscount,
       limit: 100000,
     );
     final title = [
       ?_statusFilter?.label,
       ?_availability?.label,
+      if (_minDiscount != null) 'Descuento de $_minDiscount% o más',
       if (_store != null) storeByKey(_store).name,
       ?_category,
       if (_search.text.trim().isNotEmpty) '"${_search.text.trim()}"',
@@ -333,6 +339,7 @@ class _CatalogScreenState extends State<CatalogScreen> {
         (_statusFilter == null ? 0 : 1) +
         (_category == null ? 0 : 1) +
         (_availability == null ? 0 : 1) +
+        (_minDiscount == null ? 0 : 1) +
         (_store == null ? 0 : 1);
 
     return Scaffold(
@@ -347,6 +354,12 @@ class _CatalogScreenState extends State<CatalogScreen> {
         availability: _availability,
         onAvailability: (a) {
           _availability = a;
+          _reload();
+        },
+        discountCounts: _discountCounts,
+        minDiscount: _minDiscount,
+        onMinDiscount: (d) {
+          _minDiscount = d;
           _reload();
         },
         storeCounts: _storeCounts,
@@ -459,6 +472,20 @@ class _CatalogScreenState extends State<CatalogScreen> {
                       },
                       visualDensity: VisualDensity.compact,
                     ),
+                  if (_minDiscount case final d?)
+                    InputChip(
+                      avatar: const Icon(
+                        Icons.local_offer_outlined,
+                        size: 16,
+                        color: onSaleColor,
+                      ),
+                      label: Text('$d% o más'),
+                      onDeleted: () {
+                        _minDiscount = null;
+                        _reload();
+                      },
+                      visualDensity: VisualDensity.compact,
+                    ),
                   if (_category != null)
                     InputChip(
                       avatar: const Icon(Icons.category_outlined, size: 16),
@@ -558,6 +585,9 @@ class _FiltersDrawer extends StatelessWidget {
     required this.availabilityCounts,
     required this.availability,
     required this.onAvailability,
+    required this.discountCounts,
+    required this.minDiscount,
+    required this.onMinDiscount,
     required this.storeCounts,
     required this.store,
     required this.onStore,
@@ -568,6 +598,9 @@ class _FiltersDrawer extends StatelessWidget {
   final Map<Availability, int> availabilityCounts;
   final Availability? availability;
   final ValueChanged<Availability?> onAvailability;
+  final Map<int, int> discountCounts;
+  final int? minDiscount;
+  final ValueChanged<int?> onMinDiscount;
   final Map<String, int> storeCounts;
   final String? store;
   final ValueChanged<String?> onStore;
@@ -689,6 +722,29 @@ class _FiltersDrawer extends StatelessWidget {
                       ),
                       onTap: () => onAvailability(a),
                     ),
+                  // Solo si hay algo en oferta.
+                  if ((discountCounts[discountSteps.first] ?? 0) > 0) ...[
+                    header('Descuento'),
+                    option(
+                      selected: minDiscount == null,
+                      label: 'Cualquiera',
+                      count: total,
+                      leading: const Icon(Icons.local_offer_outlined),
+                      onTap: () => onMinDiscount(null),
+                    ),
+                    for (final d in discountSteps)
+                      if ((discountCounts[d] ?? 0) > 0 || minDiscount == d)
+                        option(
+                          selected: minDiscount == d,
+                          label: '$d% o más',
+                          count: discountCounts[d] ?? 0,
+                          leading: const Icon(
+                            Icons.local_offer_outlined,
+                            color: onSaleColor,
+                          ),
+                          onTap: () => onMinDiscount(d),
+                        ),
+                  ],
                   header('Categoría'),
                   option(
                     selected: category == null,
@@ -719,12 +775,14 @@ class _FiltersDrawer extends StatelessWidget {
                         status == null &&
                             category == null &&
                             availability == null &&
+                            minDiscount == null &&
                             store == null
                         ? null
                         : () {
                             onStatus(null);
                             onCategory(null);
                             onAvailability(null);
+                            onMinDiscount(null);
                             onStore(null);
                           },
                     child: const Text('Quitar filtros'),

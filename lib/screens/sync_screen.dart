@@ -5,12 +5,15 @@ import 'package:flutter/material.dart';
 
 import '../app_scope.dart';
 import '../db/app_database.dart';
-import '../services/backup_actions.dart';
+import '../models.dart';
+import '../services/auth_service.dart';
+import '../services/sync_flow.dart';
 import '../services/sync_service.dart';
 import '../widgets/comic_widgets.dart';
 
-/// Dirección de la sincronización.
-enum SyncDirection { pcToPhone, phoneToPc }
+/// Qué hace la sincronización. Al combinar, la PC muestra el PIN y el teléfono
+/// lo escribe.
+enum SyncDirection { pcToPhone, phoneToPc, merge }
 
 bool get _isPhone => Platform.isAndroid || Platform.isIOS;
 
@@ -30,7 +33,7 @@ class _SyncScreenState extends State<SyncScreen> {
   /// Este dispositivo envía si es el origen de la dirección elegida.
   bool get _sending => switch (_direction!) {
     SyncDirection.pcToPhone => !_isPhone,
-    SyncDirection.phoneToPc => _isPhone,
+    SyncDirection.phoneToPc || SyncDirection.merge => _isPhone,
   };
 
   @override
@@ -48,7 +51,10 @@ class _SyncScreenState extends State<SyncScreen> {
       body: _direction == null
           ? _ChooseDirection(onChosen: (d) => setState(() => _direction = d))
           : _sending
-          ? _SendPanel(direction: _direction!)
+          ? _SendPanel(
+              direction: _direction!,
+              onDataChanged: widget.onDataChanged,
+            )
           : _ReceivePanel(
               direction: _direction!,
               onDataChanged: widget.onDataChanged,
@@ -57,8 +63,30 @@ class _SyncScreenState extends State<SyncScreen> {
   }
 }
 
-String _directionLabel(SyncDirection d) =>
-    d == SyncDirection.pcToPhone ? 'PC → Móvil' : 'Móvil → PC';
+/// Recibe los datos de otro dispositivo desde el inicio de sesión: al llegar
+/// se crea (o se entra a) la cuenta del respaldo y se importan sus datos.
+class ReceiveAtLoginScreen extends StatelessWidget {
+  const ReceiveAtLoginScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(_isPhone ? 'Recibir de la PC' : 'Recibir del teléfono'),
+      ),
+      body: _ReceivePanel(
+        direction: _isPhone ? SyncDirection.pcToPhone : SyncDirection.phoneToPc,
+        atLogin: true,
+      ),
+    );
+  }
+}
+
+String _directionLabel(SyncDirection d) => switch (d) {
+  SyncDirection.pcToPhone => 'PC → Móvil',
+  SyncDirection.phoneToPc => 'Móvil → PC',
+  SyncDirection.merge => 'Combinar',
+};
 
 class _ChooseDirection extends StatelessWidget {
   const _ChooseDirection({required this.onChosen});
@@ -72,8 +100,9 @@ class _ChooseDirection extends StatelessWidget {
       SyncDirection d,
       IconData from,
       IconData to,
-      String explain,
-    ) => Card(
+      String explain, {
+      IconData arrow = Icons.arrow_forward,
+    }) => Card(
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: () => onChosen(d),
@@ -82,9 +111,9 @@ class _ChooseDirection extends StatelessWidget {
           child: Row(
             children: [
               Icon(from, size: 36),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 8),
-                child: Icon(Icons.arrow_forward, size: 28),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Icon(arrow, size: 28),
               ),
               Icon(to, size: 36),
               const SizedBox(width: 20),
@@ -109,21 +138,32 @@ class _ChooseDirection extends StatelessWidget {
       children: [
         const Text(
           'Elige la misma opción en los dos dispositivos. Tienen que estar '
-          'conectados a la misma red Wi-Fi y con sesión iniciada.',
+          'conectados a la misma red Wi-Fi y con sesión iniciada. El que '
+          'recibe también puede hacerlo desde el inicio de sesión, con '
+          '"Recibir mis datos".',
         ),
         const SizedBox(height: 16),
         option(
           SyncDirection.pcToPhone,
           Icons.computer,
           Icons.phone_android,
-          'Tus colecciones, estados, pedidos y carritos de la PC reemplazan los del teléfono.',
+          'Tus colecciones, estados, pedidos, carritos y ubicaciones de la PC reemplazan los del teléfono.',
         ),
         const SizedBox(height: 8),
         option(
           SyncDirection.phoneToPc,
           Icons.phone_android,
           Icons.computer,
-          'Tus colecciones, estados, pedidos y carritos del teléfono reemplazan los de la PC.',
+          'Tus colecciones, estados, pedidos, carritos y ubicaciones del teléfono reemplazan los de la PC.',
+        ),
+        const SizedBox(height: 8),
+        option(
+          SyncDirection.merge,
+          Icons.computer,
+          Icons.phone_android,
+          'Junta los cambios de los dos dispositivos sin perder los de '
+          'ninguno. La primera vez haz un reemplazo.',
+          arrow: Icons.sync_alt,
         ),
         const SizedBox(height: 16),
         Text(
@@ -140,10 +180,17 @@ class _ChooseDirection extends StatelessWidget {
 // ------------------------------------------------------------------ recibir
 
 class _ReceivePanel extends StatefulWidget {
-  const _ReceivePanel({required this.direction, this.onDataChanged});
+  const _ReceivePanel({
+    required this.direction,
+    this.onDataChanged,
+    this.atLogin = false,
+  });
 
   final SyncDirection direction;
   final VoidCallback? onDataChanged;
+
+  /// Sin sesión iniciada: la cuenta se elige al recibir los datos.
+  final bool atLogin;
 
   @override
   State<_ReceivePanel> createState() => _ReceivePanelState();
@@ -154,6 +201,9 @@ class _ReceivePanelState extends State<_ReceivePanel> {
   List<String> _addresses = [];
   String? _error;
   String? _done;
+
+  /// Ya se confirmó y se espera al otro dispositivo.
+  bool _finishing = false;
 
   @override
   void initState() {
@@ -168,9 +218,12 @@ class _ReceivePanelState extends State<_ReceivePanel> {
   }
 
   Future<void> _start() async {
-    final user = AppScope.of(context).user;
+    final device = _isPhone ? 'Teléfono' : 'PC';
     final receiver = SyncReceiver(
-      deviceName: '${_isPhone ? 'Teléfono' : 'PC'} de ${user.username}',
+      deviceName: widget.atLogin
+          ? '$device sin sesión'
+          : '$device de ${AppScope.of(context).user.username}',
+      acceptMerge: widget.direction == SyncDirection.merge && !widget.atLogin,
     );
     try {
       await receiver.start();
@@ -184,8 +237,15 @@ class _ReceivePanelState extends State<_ReceivePanel> {
         _addresses = addresses;
       });
       final got = await receiver.received;
-      await receiver.stop();
-      if (mounted) await _confirm(got);
+      receiver.stopAnnouncing();
+      if (!mounted) return;
+      // El servidor sigue abierto para responderle al que envió; se cierra al
+      // salir de la pantalla.
+      if (got.merge) {
+        await _confirmMerge(got);
+      } else {
+        await _confirm(got);
+      }
     } on SyncException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } catch (e) {
@@ -201,10 +261,39 @@ class _ReceivePanelState extends State<_ReceivePanel> {
     try {
       summary = AppDatabase.inspectUserBackup(got.data);
     } on BackupException catch (e) {
-      setState(() => _error = e.message);
+      await _receiver?.publishResult({'accepted': false, 'error': e.message});
+      if (mounted) setState(() => _error = e.message);
       return;
     }
     final newComics = scope.db.countNewComics(got.data);
+    if (!mounted) return;
+    if (widget.atLogin) {
+      final ok = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => ClaimAccountDialog(
+          from: got.from,
+          summary: summary,
+          newComics: newComics,
+          // Se importa en el mismo paso que la sesión, antes de que se
+          // dibuje la pantalla principal con los datos vacíos.
+          onAuthenticated: (user) => applyReplace(scope.db, user, got),
+        ),
+      );
+      await _receiver?.publishResult({'accepted': ok == true});
+      if (!mounted) return;
+      setState(() {
+        if (ok == true) {
+          _done =
+              'Listo: ${summary.collections} colecciones, '
+              '${summary.owned + summary.purchased + summary.wishlist} estados y '
+              '$newComics cómics nuevos en el catálogo.';
+        } else {
+          _error = 'Rechazaste los datos recibidos. No cambió nada.';
+        }
+      });
+      return;
+    }
     final ok = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -217,7 +306,7 @@ class _ReceivePanelState extends State<_ReceivePanel> {
           '• ${summary.owned} obtenidos, ${summary.purchased} comprados, '
           '${summary.wishlist} en wishlist\n'
           '• $newComics cómics nuevos para el catálogo de este dispositivo\n\n'
-          'Se reemplazarán TUS colecciones, estados, pedidos y carritos en este dispositivo '
+          'Se reemplazarán TUS colecciones, estados, pedidos, carritos y ubicaciones en este dispositivo '
           '(${scope.user.username}). Antes se guardará un respaldo automático.',
         ),
         actions: [
@@ -234,12 +323,14 @@ class _ReceivePanelState extends State<_ReceivePanel> {
     );
     if (!mounted) return;
     if (ok != true) {
+      await _receiver?.publishResult({'accepted': false});
       setState(
         () => _error = 'Rechazaste los datos recibidos. No cambió nada.',
       );
       return;
     }
-    importWithAutoBackup(scope.db, scope.user, got.data);
+    applyReplace(scope.db, scope.user, got);
+    await _receiver?.publishResult({'accepted': true});
     widget.onDataChanged?.call();
     setState(
       () => _done =
@@ -249,12 +340,92 @@ class _ReceivePanelState extends State<_ReceivePanel> {
     );
   }
 
+  Future<void> _confirmMerge(ReceivedSync got) async {
+    final scope = AppScope.of(context);
+    final receiver = _receiver!;
+    final MergePlan plan;
+    try {
+      plan = planMerge(scope.db, scope.user.id, got);
+    } on SyncException catch (e) {
+      await receiver.publishResult({'accepted': false, 'error': e.message});
+      if (mounted) setState(() => _error = e.message);
+      return;
+    }
+    if (!mounted) return;
+    final theirUser = got.data['username'] as String? ?? '';
+    final otherUser =
+        theirUser.toLowerCase() != scope.user.username.toLowerCase();
+    final notes = plan.result.notes;
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(Icons.sync_alt),
+        title: Text('Combinar con ${got.from}'),
+        content: SingleChildScrollView(
+          child: Text(
+            '• ${plan.result.toMine} cambios llegan a este dispositivo\n'
+            '• ${plan.result.toTheirs} cambios van al otro dispositivo'
+            '${notes.isEmpty ? '' : '\n\nConflictos resueltos:\n'
+                      '${notes.take(5).map((n) => '• $n').join('\n')}'
+                      '${notes.length > 5 ? '\n• …y ${notes.length - 5} más' : ''}'}'
+            '${plan.sharedBase ? '' : '\n\nLa última sincronización no terminó '
+                      'bien: esta vez se juntará todo sin borrar nada.'}'
+            '${otherUser ? '\n\nOjo: los datos son de otro usuario ($theirUser).' : ''}'
+            '\n\nAntes se guardará un respaldo automático en los dos '
+            'dispositivos.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Rechazar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Combinar'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (ok != true) {
+      await receiver.publishResult({'accepted': false});
+      setState(() => _error = 'Rechazaste la combinación. No cambió nada.');
+      return;
+    }
+    setState(() => _finishing = true);
+    await receiver.publishResult(plan.accepted);
+    final applied = await receiver.acknowledged.timeout(
+      const Duration(minutes: 2),
+      onTimeout: () => false,
+    );
+    if (!mounted) return;
+    if (!applied) {
+      setState(() {
+        _finishing = false;
+        _error =
+            'El otro dispositivo no confirmó. Aquí no cambió nada; vuelve a '
+            'intentarlo.';
+      });
+      return;
+    }
+    applyMerge(scope.db, scope.user, plan);
+    widget.onDataChanged?.call();
+    setState(() {
+      _finishing = false;
+      _done =
+          'Listo: ${plan.result.toMine} cambios llegaron a este dispositivo.';
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final from = widget.direction == SyncDirection.pcToPhone
         ? 'la PC'
         : 'el teléfono';
+    final merging = widget.direction == SyncDirection.merge;
 
     Widget centered(List<Widget> children) => Center(
       child: SingleChildScrollView(
@@ -278,7 +449,7 @@ class _ReceivePanelState extends State<_ReceivePanel> {
         const SizedBox(height: 16),
         FilledButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Cerrar'),
+          child: Text(widget.atLogin ? 'Entrar' : 'Cerrar'),
         ),
       ]);
     }
@@ -294,6 +465,13 @@ class _ReceivePanelState extends State<_ReceivePanel> {
         ),
       ]);
     }
+    if (_finishing) {
+      return centered([
+        const LinearProgressIndicator(),
+        const SizedBox(height: 8),
+        const Text('Aplicando en el otro dispositivo…'),
+      ]);
+    }
     final r = _receiver;
     if (r == null) return const Center(child: CircularProgressIndicator());
 
@@ -304,7 +482,7 @@ class _ReceivePanelState extends State<_ReceivePanel> {
       ),
       const SizedBox(height: 8),
       Text(
-        'Este dispositivo va a RECIBIR. En $from abre ComicShelf, ve a '
+        'Este dispositivo va a ${merging ? 'COMBINAR' : 'RECIBIR'}. En $from abre ComicShelf, ve a '
         '⚙️ → Sincronizar, elige "${_directionLabel(widget.direction)}" y escribe este PIN:',
         textAlign: TextAlign.center,
       ),
@@ -340,12 +518,196 @@ class _ReceivePanelState extends State<_ReceivePanel> {
   }
 }
 
+/// Pide la cuenta en la que se guardan los datos recibidos sin sesión: si el
+/// usuario del respaldo ya existe aquí se pide su contraseña, si no se crea.
+class ClaimAccountDialog extends StatefulWidget {
+  const ClaimAccountDialog({
+    super.key,
+    required this.from,
+    required this.summary,
+    required this.newComics,
+    required this.onAuthenticated,
+  });
+
+  final String from;
+  final BackupSummary summary;
+  final int newComics;
+  final void Function(User user) onAuthenticated;
+
+  @override
+  State<ClaimAccountDialog> createState() => ClaimAccountDialogState();
+}
+
+class ClaimAccountDialogState extends State<ClaimAccountDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final _user = TextEditingController(text: widget.summary.username);
+  final _pass = TextEditingController();
+  final _pass2 = TextEditingController();
+  bool _remember = true;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _user.dispose();
+    _pass.dispose();
+    _pass2.dispose();
+    super.dispose();
+  }
+
+  bool get _exists =>
+      AppScope.of(context).db.findUserRow(_user.text.trim()) != null;
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    // Deja que se pinte el indicador antes del cálculo del hash.
+    await Future.delayed(const Duration(milliseconds: 16));
+    if (!mounted) return;
+    final auth = AppScope.of(context).auth;
+    try {
+      if (_exists) {
+        auth.login(_user.text, _pass.text, remember: _remember);
+      } else {
+        auth.register(_user.text, _pass.text, remember: _remember);
+      }
+      widget.onAuthenticated(auth.currentUser!);
+    } on AuthException catch (e) {
+      setState(() {
+        _error = e.message;
+        _busy = false;
+      });
+      return;
+    }
+    Navigator.pop(context, true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.summary;
+    final exists = _exists;
+    return AlertDialog(
+      icon: const Icon(Icons.sync),
+      title: Text('Datos recibidos de ${widget.from}'),
+      content: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Contiene:\n'
+                '• ${s.collections} colecciones\n'
+                '• ${s.owned} obtenidos, ${s.purchased} comprados, '
+                '${s.wishlist} en wishlist\n'
+                '• ${s.orders} pedidos, ${s.locations} ubicaciones\n'
+                '• ${widget.newComics} cómics nuevos para el catálogo',
+              ),
+              const SizedBox(height: 16),
+              Text(
+                exists
+                    ? 'Ese usuario ya existe aquí: escribe su contraseña y '
+                          'sus datos se reemplazarán (antes se guarda un '
+                          'respaldo automático).'
+                    : 'Se creará esta cuenta en este dispositivo. Elige una '
+                          'contraseña; no tiene que ser la de la PC.',
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _user,
+                enabled: !_busy,
+                decoration: const InputDecoration(
+                  labelText: 'Usuario',
+                  prefixIcon: Icon(Icons.person_outline),
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (_) => setState(() {}),
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? 'Escribe tu usuario'
+                    : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _pass,
+                enabled: !_busy,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'Contraseña',
+                  prefixIcon: Icon(Icons.lock_outline),
+                  border: OutlineInputBorder(),
+                ),
+                onFieldSubmitted: exists ? (_) => _submit() : null,
+                validator: (v) =>
+                    (v == null || v.isEmpty) ? 'Escribe tu contraseña' : null,
+              ),
+              if (!exists) ...[
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _pass2,
+                  enabled: !_busy,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Confirmar contraseña',
+                    prefixIcon: Icon(Icons.lock_outline),
+                    border: OutlineInputBorder(),
+                  ),
+                  onFieldSubmitted: (_) => _submit(),
+                  validator: (v) =>
+                      v != _pass.text ? 'Las contraseñas no coinciden' : null,
+                ),
+              ],
+              CheckboxListTile(
+                value: _remember,
+                onChanged: _busy
+                    ? null
+                    : (v) => setState(() => _remember = v ?? false),
+                title: const Text('Recuérdame'),
+                controlAffinity: ListTileControlAffinity.leading,
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+              ),
+              if (_error != null)
+                Text(
+                  _error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.pop(context, false),
+          child: const Text('Rechazar'),
+        ),
+        FilledButton(
+          onPressed: _busy ? null : _submit,
+          child: _busy
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Text(
+                  exists ? 'Entrar y reemplazar' : 'Crear cuenta e importar',
+                ),
+        ),
+      ],
+    );
+  }
+}
+
 // -------------------------------------------------------------------- enviar
 
 class _SendPanel extends StatefulWidget {
-  const _SendPanel({required this.direction});
+  const _SendPanel({required this.direction, this.onDataChanged});
 
   final SyncDirection direction;
+  final VoidCallback? onDataChanged;
 
   @override
   State<_SendPanel> createState() => _SendPanelState();
@@ -361,6 +723,9 @@ class _SendPanelState extends State<_SendPanel> {
   bool _busy = false;
   String? _error;
   String? _done;
+
+  /// Enviado; falta que el otro dispositivo responda.
+  bool _waiting = false;
 
   @override
   void initState() {
@@ -415,20 +780,77 @@ class _SendPanelState extends State<_SendPanel> {
       _error = null;
     });
     try {
-      await _sender.send(
-        peer,
-        _pin.text,
-        scope.db.exportUserData(scope.user.id, fullCatalog: true),
-      );
-      setState(
-        () => _done =
-            'Enviado a ${peer.name}. Confirma en ese dispositivo para terminar.',
-      );
+      if (widget.direction == SyncDirection.merge) {
+        await _merge(scope, peer);
+      } else {
+        await _replace(scope, peer);
+      }
     } on SyncException catch (e) {
-      setState(() => _error = e.message);
+      if (mounted) setState(() => _error = e.message);
+    } on BackupException catch (e) {
+      if (mounted) setState(() => _error = e.message);
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _waiting = false;
+        });
+      }
     }
+  }
+
+  Future<void> _replace(AppScope scope, SyncPeer peer) async {
+    final userId = scope.user.id;
+    final revision = scope.db.syncRevision(userId);
+    final syncId = newSyncId();
+    final data = replacePayload(scope.db, userId, syncId);
+    await _sender.send(peer, _pin.text, data);
+    if (!mounted) return;
+    setState(() => _waiting = true);
+    final reply = await _sender.waitResult(peer);
+    if (!mounted) return;
+    if (reply['accepted'] != true) {
+      setState(
+        () => _error =
+            reply['error'] as String? ?? '${peer.name} rechazó los datos.',
+      );
+      return;
+    }
+    confirmReplace(scope.db, userId, syncId, data, revision);
+    setState(() => _done = 'Listo: ${peer.name} recibió tus datos.');
+  }
+
+  Future<void> _merge(AppScope scope, SyncPeer peer) async {
+    await _sender.sendForMerge(
+      peer,
+      _pin.text,
+      mergePayload(scope.db, scope.user.id),
+    );
+    if (!mounted) return;
+    setState(() => _waiting = true);
+    final reply = await _sender.waitResult(peer);
+    if (!mounted) return;
+    if (reply['accepted'] != true) {
+      setState(
+        () => _error =
+            reply['error'] as String? ??
+            '${peer.name} rechazó la combinación. No cambió nada.',
+      );
+      return;
+    }
+    try {
+      applyMergeReply(scope.db, scope.user, reply);
+    } catch (_) {
+      await _sender.acknowledge(peer, ok: false);
+      rethrow;
+    }
+    await _sender.acknowledge(peer, ok: true);
+    widget.onDataChanged?.call();
+    if (!mounted) return;
+    setState(
+      () => _done =
+          'Listo: ${reply['changes']} cambios llegaron a este dispositivo.',
+    );
   }
 
   @override
@@ -472,7 +894,9 @@ class _SendPanelState extends State<_SendPanel> {
         ),
         const SizedBox(height: 4),
         Text(
-          'Este dispositivo va a ENVIAR. En $to abre ⚙️ → Sincronizar, elige '
+          'Este dispositivo va a '
+          '${widget.direction == SyncDirection.merge ? 'COMBINAR' : 'ENVIAR'}. '
+          'En $to abre ⚙️ → Sincronizar, elige '
           '"${_directionLabel(widget.direction)}" y te mostrará un PIN.',
         ),
         const SizedBox(height: 16),
@@ -570,7 +994,9 @@ class _SendPanelState extends State<_SendPanel> {
           label: Text(
             _selected == null
                 ? 'Elige un dispositivo'
-                : 'Enviar a ${_selected!.name}',
+                : _waiting
+                ? 'Esperando a ${_selected!.name}…'
+                : '${widget.direction == SyncDirection.merge ? 'Combinar con' : 'Enviar a'} ${_selected!.name}',
           ),
         ),
       ],
