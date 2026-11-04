@@ -101,6 +101,20 @@ void main() {
       expect(st('Q2'), ComicStatus.purchased);
     });
 
+    test('recibir por partes cierra el pedido cuando llega todo', () {
+      final id = db.createOrder(u, store: 'Panini', skus: ['Q1', 'Q2', 'Q3']);
+      expect(db.receiveOrderItems(u, id, ['Q1', 'Q4']), isFalse);
+      expect(st('Q1'), ComicStatus.owned);
+      expect(st('Q2'), ComicStatus.purchased);
+      expect(st('Q4'), isNull); // no es del pedido
+      expect(db.order(u, id)!.received, isFalse);
+      expect(db.order(u, id)!.ownedCount, 1);
+
+      expect(db.receiveOrderItems(u, id, ['Q2', 'Q3']), isTrue);
+      expect(db.order(u, id)!.received, isTrue);
+      expect(st('Q3'), ComicStatus.owned);
+    });
+
     test('obtener un cómic suelto no lo saca del pedido pendiente', () {
       final id = db.createOrder(u, store: 'Panini', skus: ['Q1', 'Q2']);
       db.setStatus(u, ['Q1'], ComicStatus.owned);

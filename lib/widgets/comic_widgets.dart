@@ -79,18 +79,21 @@ class CollectionValues extends StatelessWidget {
 const preorderColor = Color(0xFF6A47B8);
 const availableColor = Color(0xFF2F6FB0);
 const soldOutColor = Color(0xFF2A2A2A);
+const onSaleColor = Color(0xFFC62828);
 
 Color availabilityColor(Availability a) => switch (a) {
   Availability.available => const Color(0xFF5A9BD8),
   // El gris de "agotado" de la card no se ve sobre el fondo del panel.
   Availability.soldOut => const Color(0xFF8A8A8A),
   Availability.preorder => const Color(0xFF9A7FE0),
+  Availability.onSale => const Color(0xFFE57373),
 };
 
 IconData availabilityIcon(Availability a) => switch (a) {
   Availability.available => Icons.shopping_bag_outlined,
   Availability.soldOut => Icons.remove_shopping_cart_outlined,
   Availability.preorder => Icons.schedule,
+  Availability.onSale => Icons.local_offer_outlined,
 };
 
 /// "Preventa · Disponible", "Agotado", etc., para el detalle del cómic.
@@ -100,10 +103,14 @@ String availabilityText(Comic comic) => [
         ? 'Preventa'
         : 'Preventa (sale el ${comic.releaseDate})',
   if (comic.hasStockInfo) comic.inStock ? 'Disponible' : 'Agotado',
+  if (comic.isOnSale())
+    comic.promoEnds == null
+        ? 'En oferta (-${comic.discountPercent}%)'
+        : 'En oferta (-${comic.discountPercent}%) hasta el ${comic.promoEnds}',
 ].join(' · ');
 
-/// Etiquetas sobre la portada: Preventa y Disponible / Agotado, para ver de
-/// un vistazo qué se puede comprar.
+/// Etiquetas sobre la portada: Preventa, Disponible / Agotado y el descuento,
+/// para ver de un vistazo qué se puede comprar.
 class AvailabilityBadges extends StatelessWidget {
   const AvailabilityBadges({super.key, required this.comic});
 
@@ -143,6 +150,7 @@ class AvailabilityBadges extends StatelessWidget {
                   soldOutColor,
                   textColor: const Color(0xFFD0D0D0),
                 ),
+        if (comic.isOnSale()) badge('-${comic.discountPercent}%', onSaleColor),
       ],
     );
   }
@@ -159,16 +167,30 @@ const comicGridDelegate = SliverGridDelegateWithMaxCrossAxisExtent(
 /// Monto ya en la moneda elegida: 8745.5 → "$8,745.50 MXN".
 String formatPrice(double? amount) => Money.instance.format(amount);
 
-/// Precio de un cómic convertido a la moneda elegida.
+/// Lo que se paga por un cómic (con los descuentos de catálogo y carrito),
+/// convertido a la moneda elegida.
 String formatComicPrice(Comic c) =>
-    Money.instance.formatFrom(c.price, c.currency);
+    Money.instance.formatFrom(c.finalPrice, c.currency);
 
-/// Precio de un cómic en la moneda elegida, para sumar (0 si no se puede).
+/// Precio sin descuentos de un cómic en oferta, en la moneda elegida.
+String formatRegularPrice(Comic c) =>
+    Money.instance.formatFrom(c.listPrice(), c.currency);
+
+/// Precio de lista de un cómic en la moneda elegida, para sumar el valor de
+/// una colección (0 si no se puede).
 double comicValue(Comic c) => Money.instance.convert(c.price, c.currency) ?? 0;
 
-/// Suma de precios en la moneda elegida.
+/// Suma de precios de lista en la moneda elegida.
 double sumValue(Iterable<CollectionItem> items) =>
     items.fold(0, (s, i) => s + comicValue(i.comic));
+
+/// Suma de lo que se pagaría hoy (con descuentos), para la wishlist y los
+/// carritos.
+double sumFinalValue(Iterable<CollectionItem> items) => items.fold(
+  0,
+  (s, i) =>
+      s + (Money.instance.convert(i.comic.finalPrice, i.comic.currency) ?? 0),
+);
 
 /// Aviso breve abajo de la pantalla. Se cierra al hacer clic sobre él, con
 /// la ✕ o solo a los 4 segundos, aunque tenga botón de deshacer (Flutter deja
@@ -410,6 +432,79 @@ Future<bool> addComicsToCart(BuildContext context, List<String> skus) async {
   return true;
 }
 
+/// Lugar elegido en [pickLocation]; [id] null es "Sin ubicación".
+class LocationChoice {
+  const LocationChoice(this.id);
+  final int? id;
+}
+
+/// Elige dónde guardar (o crea un lugar nuevo). Devuelve null si se canceló.
+/// Con [allowNone] aparece "Sin ubicación" para sacarlo de donde esté.
+Future<LocationChoice?> pickLocation(
+  BuildContext context, {
+  String title = 'Guardar en',
+  int? current,
+  bool allowNone = false,
+}) {
+  final scope = AppScope.of(context);
+  return showDialog<LocationChoice>(
+    context: context,
+    builder: (ctx) {
+      final places = scope.db.locations(scope.user.id);
+      return SimpleDialog(
+        title: Text(title),
+        children: [
+          for (final l in places)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, LocationChoice(l.id)),
+              padding: EdgeInsets.fromLTRB(16.0 + 20 * l.depth, 2, 16, 2),
+              child: ListTile(
+                dense: true,
+                leading: Icon(locationIcon(l.depth)),
+                title: Text(l.name),
+                subtitle: l.depth == 0 ? null : Text(l.path),
+                trailing: l.id == current ? const Icon(Icons.check) : null,
+                selected: l.id == current,
+              ),
+            ),
+          SimpleDialogOption(
+            onPressed: () async {
+              final name = await askText(
+                ctx,
+                title: 'Nueva ubicación',
+                label: 'Nombre (ej. Closet 1)',
+              );
+              if (name == null || !ctx.mounted) return;
+              Navigator.pop(
+                ctx,
+                LocationChoice(scope.db.createLocation(scope.user.id, name)),
+              );
+            },
+            child: const ListTile(
+              dense: true,
+              leading: Icon(Icons.add),
+              title: Text('Nueva ubicación…'),
+            ),
+          ),
+          if (allowNone && current != null)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, const LocationChoice(null)),
+              child: const ListTile(
+                dense: true,
+                leading: Icon(Icons.location_off_outlined),
+                title: Text('Sin ubicación'),
+              ),
+            ),
+        ],
+      );
+    },
+  );
+}
+
+/// Ícono de un lugar: el primer nivel es un mueble, lo de adentro una caja.
+IconData locationIcon(int depth) =>
+    depth == 0 ? Icons.shelves : Icons.inventory_2_outlined;
+
 /// Ficha con los datos de un cómic.
 Future<void> showComicDetail(
   BuildContext context,
@@ -429,6 +524,14 @@ Future<void> showComicDetail(
       var status =
           scope.db.statuses(scope.user.id)[comic.sku] ??
           ComicStatus.unclassified;
+      var locationId = scope.db.skuLocations(scope.user.id)[comic.sku];
+      String? locationPath() => locationId == null
+          ? null
+          : scope.db
+                .locations(scope.user.id)
+                .firstWhere((l) => l.id == locationId)
+                .path;
+      var location = locationPath();
 
       return StatefulBuilder(
         builder: (ctx, setLocal) {
@@ -464,6 +567,34 @@ Future<void> showComicDetail(
                 },
               ),
               const SizedBox(height: 8),
+              // Dónde está guardado (o un botón para guardarlo).
+              ActionChip(
+                avatar: Icon(
+                  location == null
+                      ? Icons.add_location_alt_outlined
+                      : Icons.shelves,
+                  size: 18,
+                ),
+                label: Text(location ?? 'Sin ubicación · Guardar en…'),
+                tooltip: 'Cambiar dónde está guardado',
+                onPressed: () async {
+                  final choice = await pickLocation(
+                    ctx,
+                    current: locationId,
+                    allowNone: true,
+                  );
+                  if (choice == null) return;
+                  scope.db.setComicLocation(scope.user.id, [
+                    comic.sku,
+                  ], choice.id);
+                  setLocal(() {
+                    locationId = choice.id;
+                    location = locationPath();
+                  });
+                  onChanged?.call();
+                },
+              ),
+              const SizedBox(height: 8),
               row('Serie', comic.series),
               row('Número', comic.number?.toString()),
               row(
@@ -471,9 +602,23 @@ Future<void> showComicDetail(
                 comic.currency == Money.instance.display
                     ? formatComicPrice(comic)
                     : '${formatComicPrice(comic)} '
-                          '(${Money.formatIn(comic.price ?? 0, comic.currency)} '
+                          '(${Money.formatIn(comic.finalPrice ?? 0, comic.currency)} '
                           'en ${comic.shop.name})',
               ),
+              if (comic.isOnSale())
+                row(
+                  'Precio normal',
+                  '${formatRegularPrice(comic)} '
+                      '(-${comic.discountPercent}%)',
+                ),
+              if (comic.hasCartPromo)
+                row(
+                  'Promoción',
+                  [
+                    '-${comic.cartDiscount!.round()}% en el carrito',
+                    if (comic.cartPromo?.isNotEmpty ?? false) comic.cartPromo!,
+                  ].join(' · '),
+                ),
               row('Tienda', comic.shop.name),
               row('Fecha de salida', comic.releaseDate),
               row('Páginas', comic.pages?.toString()),
@@ -849,7 +994,10 @@ class ComicStatusCard extends StatelessWidget {
                                 [
                                   status.label,
                                   if (comic.price != null)
-                                    formatComicPrice(comic),
+                                    comic.isOnSale()
+                                        ? '${formatComicPrice(comic)} '
+                                              '(-${comic.discountPercent}%)'
+                                        : formatComicPrice(comic),
                                 ].join(' · '),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,

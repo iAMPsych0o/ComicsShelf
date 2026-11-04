@@ -218,8 +218,13 @@ Future<Uint8List> buildComicsPdf({
                   pad(pw.Text(_availability(item.comic), style: cell)),
                   pad(
                     pw.Text(
-                      pdfSafe(formatComicPrice(item.comic))
-                          .replaceAll(' ${Money.instance.display}', ''),
+                      // Precio de lista, igual que los totales del PDF.
+                      pdfSafe(
+                        Money.instance.formatFrom(
+                          item.comic.price,
+                          item.comic.currency,
+                        ),
+                      ).replaceAll(' ${Money.instance.display}', ''),
                       style: cell,
                       textAlign: pw.TextAlign.right,
                     ),

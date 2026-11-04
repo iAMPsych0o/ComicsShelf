@@ -8,7 +8,7 @@ import '../widgets/comic_widgets.dart';
 import '../widgets/refresh_menu.dart';
 import 'home_shell.dart';
 
-enum _Stage { categories, running, review, done }
+enum _Stage { categories, running, review, done, promos }
 
 enum _Show { all, selected, ignored, newOnly }
 
@@ -54,6 +54,11 @@ class ScraperScreenState extends State<ScraperScreen> {
 
   // Paso 4: resultado
   int _migrated = 0, _ignored = 0;
+
+  // Revisión de promociones del carrito
+  PaniniStore _promoStore = mexico;
+  int _promoDone = 0, _promoTotal = 0, _promoFound = 0;
+  String? _promoResult;
 
   @override
   void initState() {
@@ -302,7 +307,185 @@ class ScraperScreenState extends State<ScraperScreen> {
       _Stage.running => _buildRunning(context),
       _Stage.review => _buildReview(context),
       _Stage.done => _buildDone(context),
+      _Stage.promos => _buildPromos(context),
     };
+  }
+
+  // ------------------------------------------- promociones del carrito
+
+  /// Ajuste con la fecha de la última revisión de promociones de [store].
+  static String _promosCheckedKey(PaniniStore store) =>
+      'cart_promos_checked_${store.key}';
+
+  Future<void> _checkPromos() async {
+    final db = AppScope.of(context).db;
+    final store = _promoStore;
+    final comics = db.cartPromoCandidates(store.key);
+    if (comics.isEmpty) return;
+    setState(() {
+      _stage = _Stage.promos;
+      _error = null;
+      _promoResult = null;
+      _cancel = false;
+      _promoDone = 0;
+      _promoTotal = comics.length;
+      _promoFound = 0;
+    });
+    _scraper?.close();
+    _scraper = PaniniScraper(store: store);
+    final result = await _scraper!.checkCartPromos(
+      comics,
+      isCancelled: () => _cancel,
+      onProgress: (done, total, found) {
+        if (mounted) {
+          setState(() {
+            _promoDone = done;
+            _promoFound = found;
+          });
+        }
+      },
+    );
+    db.setCartPromos(result.checked, {
+      for (final e in result.promos.entries)
+        e.key: (percent: e.value.percent, label: e.value.label),
+    });
+    if (result.checked.length == comics.length) {
+      db.setSetting(_promosCheckedKey(store), DateTime.now().toIso8601String());
+    }
+    widget.changes.changed();
+    if (!mounted) return;
+    final names = {for (final p in result.promos.values) p.label}..remove('');
+    setState(() {
+      _stage = _Stage.categories;
+      _promoResult = [
+        '${store.name}: ${result.promos.length} de ${result.checked.length} '
+            'cómics revisados tienen descuento en el carrito.',
+        if (names.isNotEmpty) 'Promociones: ${names.join(', ')}.',
+        if (result.checked.length < comics.length)
+          'Quedaron ${comics.length - result.checked.length} sin revisar.',
+        ?result.warning,
+      ].join('\n');
+    });
+  }
+
+  Widget _promosCard(ThemeData theme) {
+    final db = AppScope.of(context).db;
+    final count = db.cartPromoCandidates(_promoStore.key).length;
+    final last = DateTime.tryParse(
+      db.getSetting(_promosCheckedKey(_promoStore)) ?? '',
+    );
+    // Aproximado: ~5 s por carrito.
+    final minutes = ((count / PaniniScraper.cartBatch).ceil() * 5 / 60).ceil();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Promociones del carrito', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 4),
+            const Text(
+              'Algunos eventos (como "Descuentos espeluznantes") solo se ven '
+              'al meter el cómic al carrito. Esto mete los cómics en '
+              'existencia de tu catálogo en carritos de invitado para ver '
+              'cuáles tienen descuento. No se compra nada.',
+            ),
+            if (_promoResult != null) ...[
+              const SizedBox(height: 8),
+              Card(
+                color: theme.colorScheme.secondaryContainer,
+                margin: EdgeInsets.zero,
+                child: ListTile(
+                  leading: const Icon(Icons.local_offer_outlined),
+                  title: Text(_promoResult!),
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 16,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                DropdownButton<PaniniStore>(
+                  value: _promoStore,
+                  items: [
+                    for (final s in paniniStores)
+                      DropdownMenuItem(value: s, child: Text(s.name)),
+                  ],
+                  onChanged: (v) {
+                    if (v != null) setState(() => _promoStore = v);
+                  },
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: count == 0 ? null : _checkPromos,
+                  icon: const Icon(Icons.local_offer_outlined),
+                  label: const Text('Revisar promociones'),
+                ),
+                Text(
+                  [
+                    if (count == 0)
+                      'No hay cómics en existencia de esta tienda'
+                    else
+                      '$count cómics · unos $minutes min aprox.',
+                    if (last != null)
+                      'última revisión: ${last.day}/${last.month}/${last.year}',
+                  ].join(' · '),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPromos(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(
+                width: 48,
+                height: 48,
+                child: CircularProgressIndicator(strokeWidth: 4),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                'Revisando promociones de ${_promoStore.name}…',
+                style: theme.textTheme.titleLarge,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              LinearProgressIndicator(
+                value: _promoTotal == 0 ? null : _promoDone / _promoTotal,
+                minHeight: 8,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '$_promoDone de $_promoTotal cómics · '
+                '$_promoFound con descuento',
+              ),
+              const SizedBox(height: 16),
+              OutlinedButton(
+                onPressed: _cancel
+                    ? null
+                    : () => setState(() => _cancel = true),
+                child: Text(
+                  _cancel ? 'Deteniendo…' : 'Detener y guardar lo revisado',
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   // ------------------------------------------------------------- paso 1
@@ -356,6 +539,8 @@ class ScraperScreenState extends State<ScraperScreen> {
               Text('Hasta $total productos · unos $minutes min aprox.'),
           ],
         ),
+        const SizedBox(height: 24),
+        _promosCard(theme),
       ],
     );
   }

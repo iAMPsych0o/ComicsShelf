@@ -10,6 +10,7 @@ import '../services/pdf_export.dart';
 import '../widgets/comic_picker.dart';
 import '../widgets/comic_widgets.dart';
 import 'home_shell.dart';
+import 'receive_order_screen.dart';
 
 /// Compras: carritos de futuras compras y pedidos ya pagados.
 class PurchasesScreen extends StatefulWidget {
@@ -609,6 +610,63 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     );
   }
 
+  /// Pantalla para pasar lo que llegó a "Obtenido"; el pedido se cierra solo
+  /// cuando llegó todo.
+  Future<void> _receive() async {
+    if (_items.every((i) => i.status == ComicStatus.owned)) {
+      _setReceived(true);
+      return;
+    }
+    final result = await Navigator.of(context).push<ReceiveResult>(
+      MaterialPageRoute(
+        builder: (_) => ReceiveOrderScreen(title: _order!.title, items: _items),
+      ),
+    );
+    if (result == null || result.skus.isEmpty || !mounted) return;
+    final picked = result.skus;
+    final scope = AppScope.of(context);
+    final uid = scope.user.id;
+    final before = {
+      for (final i in _items)
+        if (i.status == ComicStatus.owned) i.comic.sku,
+    };
+    final closed = scope.db.receiveOrderItems(uid, widget.orderId, picked);
+    // Dónde estaban antes, para deshacer también el lugar.
+    final placedBefore = scope.db.skuLocations(uid);
+    final stored = {
+      for (final e in result.placed.entries)
+        if (e.value != null) e.key: e.value!,
+    };
+    for (final place in stored.values.toSet()) {
+      scope.db.setComicLocation(uid, [
+        for (final e in stored.entries)
+          if (e.value == place) e.key,
+      ], place);
+    }
+    _changed();
+    final missing = _items.length - before.length - picked.length;
+    final where = stored.isEmpty ? '' : ' · ${stored.length} acomodados';
+    showNotice(
+      ScaffoldMessenger.of(context),
+      closed
+          ? 'Pedido recibido: ${_items.length} cómics → Obtenido$where'
+          : '${picked.length} cómics → Obtenido · faltan $missing$where',
+      status: ComicStatus.owned,
+      onUndo: () {
+        if (closed) {
+          scope.db.setOrderReceived(uid, widget.orderId, false);
+          scope.db.setStatus(uid, before, ComicStatus.owned);
+        } else {
+          scope.db.setStatus(uid, picked, ComicStatus.purchased);
+        }
+        for (final sku in stored.keys) {
+          scope.db.setComicLocation(uid, [sku], placedBefore[sku]);
+        }
+        _changed();
+      },
+    );
+  }
+
   void _remove(CollectionItem item) {
     final scope = AppScope.of(context);
     scope.db.removeFromOrder(scope.user.id, widget.orderId, [item.comic.sku]);
@@ -753,9 +811,9 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                 )
               else
                 FilledButton.icon(
-                  onPressed: o.count == 0 ? null : () => _setReceived(true),
+                  onPressed: o.count == 0 ? null : _receive,
                   icon: const Icon(Icons.inventory_2_outlined),
-                  label: const Text('Marcar como recibido'),
+                  label: const Text('Marcar como recibido…'),
                 ),
             ],
           ),
@@ -957,7 +1015,7 @@ class _CartDetailScreenState extends State<CartDetailScreen> {
     final available = _items.where(
       (i) => i.comic.stockStatus != 'OUT_OF_STOCK',
     );
-    final availableTotal = sumValue(available);
+    final availableTotal = sumFinalValue(available);
     return Scaffold(
       appBar: AppBar(
         title: Text(c.name),

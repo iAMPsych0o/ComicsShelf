@@ -14,6 +14,30 @@ class ScrapeResult {
   const ScrapeResult(this.comics, {this.warning});
 }
 
+/// Descuento que la tienda le aplica a un producto en el carrito.
+class CartPromo {
+  /// Porcentaje del precio (p. ej. 30.0).
+  final double percent;
+
+  /// Nombre de la promoción, sin el porcentaje ("Descuentos espeluznantes").
+  final String label;
+
+  const CartPromo(this.percent, this.label);
+}
+
+class CartPromoResult {
+  /// SKU (con prefijo de tienda) de cada producto que sí se revisó.
+  final Set<String> checked;
+
+  /// Los revisados que tienen descuento.
+  final Map<String, CartPromo> promos;
+
+  /// Aviso si la revisión no pudo terminar (lo revisado sigue siendo útil).
+  final String? warning;
+
+  const CartPromoResult(this.checked, this.promos, {this.warning});
+}
+
 /// Descarga el catálogo de una tienda oficial de Panini (México, Chile,
 /// Argentina o Brasil) usando la API pública GraphQL que usa su propio sitio
 /// web. Las cuatro comparten servidor; el encabezado `Store` elige la tienda.
@@ -93,10 +117,15 @@ class PaniniScraper {
         total_count
         page_info { total_pages }
         items {
-          sku name url_key stock_status
+          sku name url_key stock_status special_to_date
           categories { name }
           small_image { url }
-          price_range { minimum_price { final_price { value currency } } }
+          price_range {
+            minimum_price {
+              regular_price { value }
+              final_price { value currency }
+            }
+          }
           custom_attributesV2 {
             items {
               code
@@ -197,6 +226,127 @@ class PaniniScraper {
     throw lastError!;
   }
 
+  /// Productos por carrito al revisar promociones.
+  static const cartBatch = 50;
+
+  static const _addToCartQuery = r'''
+    mutation($cart: String!, $items: [CartItemInput!]!) {
+      addProductsToCart(cartId: $cart, cartItems: $items) {
+        user_errors { message }
+      }
+    }
+  ''';
+
+  /// Se lee aparte: si algún producto no se pudo agregar (la tienda a veces
+  /// lista SKU que ya no vende), la respuesta de agregar trae el carrito sin
+  /// descuentos calculados.
+  static const _cartQuery = r'''
+    query($cart: String!) {
+      cart(cart_id: $cart) {
+        items {
+          product { sku }
+          prices { row_total { value } discounts { label amount { value } } }
+        }
+      }
+    }
+  ''';
+
+  /// Revisa qué descuentos aplica la tienda en el carrito (promociones como
+  /// "Descuentos espeluznantes", que no cambian el precio del catálogo).
+  ///
+  /// Mete [comics] en carritos de invitado de [cartBatch] en [cartBatch] y
+  /// lee el descuento de cada uno. Los carritos no se compran: la tienda los
+  /// borra sola con el tiempo.
+  ///
+  /// [onProgress] recibe (revisados, total, con descuento).
+  /// Si [isCancelled] devuelve true se detiene y regresa lo revisado.
+  Future<CartPromoResult> checkCartPromos(
+    List<Comic> comics, {
+    void Function(int done, int total, int found)? onProgress,
+    bool Function()? isCancelled,
+  }) async {
+    final prefix = store.skuPrefix;
+    final checked = <String>{};
+    final promos = <String, CartPromo>{};
+    for (var start = 0; start < comics.length; start += cartBatch) {
+      if (isCancelled?.call() ?? false) break;
+      final batch = comics.skip(start).take(cartBatch).toList();
+      try {
+        final found = await _checkCartBatch([
+          for (final c in batch) c.sku.substring(prefix.length),
+        ]);
+        for (final c in batch) {
+          checked.add(c.sku);
+          if (found[c.sku.substring(prefix.length)] case final promo?) {
+            promos[c.sku] = promo;
+          }
+        }
+      } catch (e) {
+        return CartPromoResult(
+          checked,
+          promos,
+          warning: 'Se detuvo en el cómic ${start + 1} de ${comics.length}: $e',
+        );
+      }
+      onProgress?.call(checked.length, comics.length, promos.length);
+      if (start + cartBatch < comics.length) await Future.delayed(pageDelay);
+    }
+    return CartPromoResult(checked, promos);
+  }
+
+  /// Un carrito nuevo con [skus] (sin prefijo); devuelve los que tienen
+  /// descuento. Los que la tienda no deja agregar simplemente no aparecen.
+  Future<Map<String, CartPromo>> _checkCartBatch(List<String> skus) async {
+    Object? lastError;
+    for (var attempt = 1; attempt <= _maxAttempts; attempt++) {
+      try {
+        final cart =
+            (await _query('mutation { createEmptyCart }'))['createEmptyCart']
+                as String;
+        await _query(_addToCartQuery, {
+          'cart': cart,
+          'items': [
+            for (final s in skus) {'sku': s, 'quantity': 1},
+          ],
+        });
+        final data = await _query(_cartQuery, {'cart': cart});
+        final items = (data['cart']?['items'] as List?) ?? const [];
+        return {
+          for (final item in items.whereType<Map<String, dynamic>>())
+            item['product']['sku'] as String: ?_parseCartPromo(item),
+        };
+      } catch (e) {
+        lastError = e;
+        if (attempt < _maxAttempts) {
+          await Future.delayed(Duration(seconds: 3 * attempt));
+        }
+      }
+    }
+    throw lastError!;
+  }
+
+  static CartPromo? _parseCartPromo(Map<String, dynamic> item) {
+    final prices = item['prices'] as Map<String, dynamic>?;
+    final total = (prices?['row_total']?['value'] as num?)?.toDouble() ?? 0;
+    final discounts = ((prices?['discounts'] as List?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+    final amount = discounts.fold<double>(
+      0,
+      (s, d) => s + ((d['amount']?['value'] as num?)?.toDouble() ?? 0),
+    );
+    if (total <= 0 || amount <= 0) return null;
+    // "30% - Descuentos espeluznantes " → "Descuentos espeluznantes".
+    final labels = {
+      for (final d in discounts)
+        ((d['label'] as String?) ?? '')
+            .replaceFirst(RegExp(r'^\s*[\d.]+\s*%\s*-?\s*'), '')
+            .trim(),
+    }..remove('');
+    final percent = (amount / total * 1000).round() / 10;
+    return CartPromo(percent, labels.join(', '));
+  }
+
   Comic _parseProduct(Map<String, dynamic> item) {
     final attrs = <String, String>{};
     final rawAttrs = item['custom_attributesV2']?['items'] as List?;
@@ -220,7 +370,12 @@ class PaniniScraper {
 
     final prefix = store.skuPrefix;
     final seriesCode = _clean(attrs['collection_code']) ?? fromSku.code;
-    final finalPrice = item['price_range']?['minimum_price']?['final_price'];
+    final minPrice = item['price_range']?['minimum_price'];
+    final finalPrice = minPrice?['final_price'];
+    final price = (finalPrice?['value'] as num?)?.toDouble();
+    final regular = (minPrice?['regular_price']?['value'] as num?)?.toDouble();
+    // Solo se guarda el precio normal si la tienda lo tiene rebajado.
+    final onSale = price != null && regular != null && regular > price;
     return Comic(
       sku: '$prefix$sku',
       store: store.key,
@@ -234,7 +389,12 @@ class PaniniScraper {
       isbn: _clean(attrs['isbn']),
       pages: int.tryParse(attrs['pages'] ?? ''),
       contains: _stripHtml(attrs['product_contains']),
-      price: (finalPrice?['value'] as num?)?.toDouble(),
+      price: price,
+      regularPrice: onSale ? regular : null,
+      // "2026-12-18 03:00:00" → "2026-12-18".
+      promoEnds: onSale
+          ? _clean(item['special_to_date'] as String?)?.split(' ').first
+          : null,
       imageUrl: _cleanImageUrl(item['small_image']?['url'] as String?),
       categories: ((item['categories'] as List?) ?? const [])
           .map((c) => (c['name'] as String).trim())

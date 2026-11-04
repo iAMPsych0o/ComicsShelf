@@ -142,9 +142,11 @@ Future<void> importBackup(
         '• ${summary.collections} colecciones\n'
         '• ${summary.owned} obtenidos, ${summary.purchased} comprados, '
         '${summary.wishlist} en wishlist\n'
-        '• ${summary.orders} pedidos, ${summary.carts} carritos\n\n'
+        '• ${summary.orders} pedidos, ${summary.carts} carritos\n'
+        '• ${summary.locations} ubicaciones de almacenamiento\n\n'
         '${otherUser ? 'Ojo: el respaldo es de otro usuario.\n\n' : ''}'
-        'Se reemplazarán TUS colecciones, estados, pedidos y carritos '
+        'Se reemplazarán TUS colecciones, estados, pedidos, carritos y '
+        'ubicaciones '
         '(${user.username}). '
         'Los demás usuarios no se modifican. Antes se guardará un respaldo '
         'automático de tus datos actuales.',

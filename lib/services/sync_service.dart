@@ -7,13 +7,18 @@ import 'package:cryptography/cryptography.dart';
 import 'package:http/http.dart' as http;
 
 /// Sincronización directa entre dos dispositivos de la misma red Wi-Fi, sin
-/// servidor. Siempre es en un solo sentido: el que envía reemplaza las
-/// colecciones y estados del que recibe (previa confirmación de este).
+/// servidor. Se puede reemplazar (el que envía sustituye las colecciones y
+/// estados del que recibe, previa confirmación de este) o combinar (el que
+/// recibe mezcla los dos lados y le devuelve el resultado al que envió).
 ///
 /// - El que **recibe** abre un servidor HTTP local, genera un PIN de 6 dígitos
 ///   y se anuncia por UDP broadcast en la red.
 /// - El que **envía** escucha los anuncios (o usa la dirección escrita a
 ///   mano), cifra los datos con una clave derivada del PIN y los manda.
+///
+/// En los dos casos el que envía pregunta después por la respuesta
+/// (`GET /result`). Al combinar, el que envía aplica primero y lo confirma
+/// (`POST /ack`): si algo falla antes, el receptor no cambió nada.
 ///
 /// Los datos van cifrados con AES-256-GCM; la clave sale del PIN con
 /// PBKDF2 y una sal aleatoria por sesión. El receptor se cierra tras 5 PIN
@@ -28,6 +33,15 @@ class SyncException implements Exception {
 const discoveryPort = 47320;
 const _protocol = 1;
 const _maxAttempts = 5;
+
+/// Identificador de una sincronización.
+String newSyncId() {
+  final rnd = Random.secure();
+  return List.generate(
+    16,
+    (_) => rnd.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+}
 
 /// Cifrado de los datos con una clave derivada del PIN.
 class SyncCrypto {
@@ -99,7 +113,10 @@ class SyncPeer {
 class ReceivedSync {
   final String from;
   final Map<String, Object?> data;
-  const ReceivedSync(this.from, this.data);
+
+  /// Si el que envió pidió combinar en vez de reemplazar.
+  final bool merge;
+  const ReceivedSync(this.from, this.data, {this.merge = false});
 }
 
 /// Direcciones IPv4 de la red local de este dispositivo.
@@ -144,9 +161,16 @@ bool _isQuery(Datagram dg) {
 
 /// Espera datos de otro dispositivo.
 class SyncReceiver {
-  SyncReceiver({required this.deviceName, this.announce = true});
+  SyncReceiver({
+    required this.deviceName,
+    this.announce = true,
+    this.acceptMerge = false,
+  });
 
   final String deviceName;
+
+  /// Si acepta combinar (hace falta sesión y que este lado eligiera Combinar).
+  final bool acceptMerge;
 
   /// Si se anuncia por UDP (se desactiva en pruebas).
   final bool announce;
@@ -159,10 +183,20 @@ class SyncReceiver {
   Timer? _timer;
   int _failed = 0;
   final _received = Completer<ReceivedSync>();
+  final _acknowledged = Completer<bool>();
+  String? _result;
 
   /// Se completa al recibir datos válidos (o con error si se agotan los
   /// intentos de PIN).
   Future<ReceivedSync> get received => _received.future;
+
+  /// Se completa cuando el otro dispositivo dice si aplicó la respuesta.
+  Future<bool> get acknowledged => _acknowledged.future;
+
+  /// Deja lista la respuesta para el que envió.
+  Future<void> publishResult(Map<String, Object?> result) async {
+    _result = await SyncCrypto.encrypt(_key, result);
+  }
 
   int get port => _server!.port;
 
@@ -229,10 +263,33 @@ class SyncReceiver {
     try {
       if (req.method == 'GET' && req.uri.path == '/info') {
         res.write(jsonEncode(_info));
-      } else if (req.method == 'POST' && req.uri.path == '/sync') {
+      } else if (req.method == 'GET' && req.uri.path == '/result') {
+        if (_result == null) {
+          res.statusCode = HttpStatus.accepted; // aún no decide
+        } else {
+          res.write(jsonEncode({'data': _result}));
+        }
+      } else if (req.method == 'POST' && req.uri.path == '/ack') {
+        final body = jsonDecode(await utf8.decodeStream(req)) as Map;
+        final ack = await SyncCrypto.decrypt(_key, body['data'] as String);
+        res.write(jsonEncode({'ok': true}));
+        if (!_acknowledged.isCompleted) {
+          _acknowledged.complete(ack['ok'] == true);
+        }
+      } else if (req.method == 'POST' &&
+          (req.uri.path == '/sync' || req.uri.path == '/merge')) {
+        final merge = req.uri.path == '/merge';
         if (_received.isCompleted) {
           res.statusCode = HttpStatus.conflict;
           res.write(jsonEncode({'error': 'Ya se recibieron datos.'}));
+        } else if (merge && !acceptMerge) {
+          res.statusCode = HttpStatus.conflict;
+          res.write(
+            jsonEncode({
+              'error':
+                  'En el otro dispositivo inicia sesión y elige "Combinar".',
+            }),
+          );
         } else {
           final body = jsonDecode(await utf8.decodeStream(req)) as Map;
           try {
@@ -241,6 +298,7 @@ class SyncReceiver {
             final got = ReceivedSync(
               '${body['from'] ?? 'Otro dispositivo'}',
               data,
+              merge: merge,
             );
             afterResponse = () {
               if (!_received.isCompleted) _received.complete(got);
@@ -273,9 +331,15 @@ class SyncReceiver {
     }
   }
 
-  Future<void> stop() async {
+  /// Deja de anunciarse; el servidor sigue para entregar la respuesta.
+  void stopAnnouncing() {
     _timer?.cancel();
     _socket?.close();
+    _socket = null;
+  }
+
+  Future<void> stop() async {
+    stopAnnouncing();
     await _server?.close(force: true);
   }
 }
@@ -289,6 +353,8 @@ class SyncSender {
   final http.Client _client;
   RawDatagramSocket? _socket;
   Timer? _askTimer;
+  SecretKey? _key;
+  bool _closed = false;
 
   /// Dispositivos que se anuncian en la red, a medida que aparecen.
   Stream<SyncPeer> discover() async* {
@@ -347,8 +413,63 @@ class SyncSender {
     }
   }
 
-  Future<void> send(
+  Future<void> send(SyncPeer peer, String pin, Map<String, Object?> data) =>
+      _deliver(peer, '/sync', pin, data);
+
+  /// Pide combinar; el resultado llega por [waitResult].
+  Future<void> sendForMerge(
     SyncPeer peer,
+    String pin,
+    Map<String, Object?> data,
+  ) => _deliver(peer, '/merge', pin, data);
+
+  /// Espera la respuesta de [peer] a lo enviado.
+  Future<Map<String, Object?>> waitResult(
+    SyncPeer peer, {
+    Duration every = const Duration(seconds: 1),
+    Duration timeout = const Duration(minutes: 10),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    var failures = 0;
+    while (!_closed && failures < 5 && DateTime.now().isBefore(deadline)) {
+      try {
+        final res = await _client
+            .get(Uri.parse('http://${peer.address}/result'))
+            .timeout(const Duration(seconds: 30));
+        if (res.statusCode == HttpStatus.ok) {
+          return await SyncCrypto.decrypt(
+            _key!,
+            (jsonDecode(res.body) as Map)['data'] as String,
+          );
+        }
+        failures = res.statusCode == HttpStatus.accepted ? 0 : failures + 1;
+      } catch (_) {
+        failures++;
+      }
+      await Future.delayed(every);
+    }
+    throw SyncException('No llegó la respuesta de ${peer.name}.');
+  }
+
+  /// Le dice a [peer] si se pudo aplicar su respuesta. Si no le llega, no
+  /// cambia nada de su lado y la próxima combinación no borra nada.
+  Future<void> acknowledge(SyncPeer peer, {required bool ok}) async {
+    try {
+      await _client
+          .post(
+            Uri.parse('http://${peer.address}/ack'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'data': await SyncCrypto.encrypt(_key!, {'ok': ok}),
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {}
+  }
+
+  Future<void> _deliver(
+    SyncPeer peer,
+    String path,
     String pin,
     Map<String, Object?> data,
   ) async {
@@ -356,12 +477,13 @@ class SyncSender {
       pin.replaceAll(RegExp(r'\s'), ''),
       peer.salt,
     );
+    _key = key;
     final payload = await SyncCrypto.encrypt(key, data);
     final http.Response res;
     try {
       res = await _client
           .post(
-            Uri.parse('http://${peer.address}/sync'),
+            Uri.parse('http://${peer.address}$path'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'from': deviceName, 'data': payload}),
           )
@@ -370,6 +492,9 @@ class SyncSender {
       throw SyncException('No se pudo conectar con ${peer.name}.');
     }
     if (res.statusCode == HttpStatus.ok) return;
+    if (res.statusCode == HttpStatus.notFound) {
+      throw SyncException('Actualiza ComicShelf en ${peer.name}.');
+    }
     final error = (() {
       try {
         return (jsonDecode(res.body) as Map)['error'] as String?;
@@ -383,6 +508,7 @@ class SyncSender {
   }
 
   void close() {
+    _closed = true;
     _askTimer?.cancel();
     _socket?.close();
     _client.close();
