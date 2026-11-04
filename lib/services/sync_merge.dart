@@ -5,7 +5,8 @@ import '../db/app_database.dart';
 /// Se compara lo de cada dispositivo contra la copia base (cómo quedaron los
 /// dos en la última sincronización): lo que cambió en un solo lado se aplica
 /// y solo hay conflicto si cambió lo mismo en ambos. Sin base nada cuenta como
-/// borrado, así que el resultado es una unión.
+/// borrado, así que el resultado es una unión; además, como cada dispositivo
+/// pudo crear sus propios uid, primero se empareja lo que es lo mismo.
 ///
 /// Las reglas de conflicto: estados y ubicaciones se quedan con el cambio más
 /// reciente; los demás campos, con el valor del dispositivo que combina; y lo
@@ -47,8 +48,10 @@ class SyncDoc {
   /// Lee un respaldo. "Compras sin pedido" no se incluye: cada dispositivo la
   /// recalcula a partir de los estados.
   factory SyncDoc.fromBackup(Map<String, Object?> data) {
-    String uidOf(Map r) =>
-        r['uid'] as String? ?? '${r['created_at']}/${r['name']}';
+    // Sin uid (respaldos anteriores) cada fila es distinta aunque coincida
+    // la fecha; al combinar se empareja por su contenido.
+    var unnamed = 0;
+    String uidOf(Map r) => r['uid'] as String? ?? 'sin-uid-${unnamed++}';
     List<Map> rows(String key) =>
         (data[key] as List? ?? const []).whereType<Map>().toList();
     Map<String, Object?> items(Object? raw) => {
@@ -210,10 +213,12 @@ MergeResult mergeUserData({
   required Map<String, Object?> mine,
   required Map<String, Object?> theirs,
 }) {
+  final myDoc = SyncDoc.fromBackup(mine);
+  final theirDoc = SyncDoc.fromBackup(theirs);
   final merge = _Merge(
     base == null ? SyncDoc() : SyncDoc.fromBackup(base),
-    SyncDoc.fromBackup(mine),
-    SyncDoc.fromBackup(theirs),
+    myDoc,
+    base == null ? _alignedTo(myDoc, theirDoc) : theirDoc,
     {
       for (final source in [mine, theirs])
         for (final c in (source['comics'] as List? ?? const []))
@@ -238,6 +243,99 @@ const _fieldLabels = {
   'received_at': 'la recepción',
   'parent': 'el lugar padre',
 };
+
+/// Empareja cada fila de [theirs] con una de [mine] probando las [keys] en
+/// orden, y devuelve uid de ellos → uid nuestro.
+Map<String, String> _match(
+  Map<String, Map<String, Object?>> mine,
+  Map<String, Map<String, Object?>> theirs,
+  List<String? Function(String uid, Map<String, Object?> row)> keys, {
+  bool Function(Map<String, Object?> a, Map<String, Object?> b)? compatible,
+}) {
+  final renames = <String, String>{};
+  final freeMine = mine.keys.where((k) => !theirs.containsKey(k)).toList();
+  final freeTheirs = theirs.keys.where((k) => !mine.containsKey(k)).toList();
+  for (final key in keys) {
+    for (final uid in freeTheirs.toList()) {
+      final wanted = key(uid, theirs[uid]!);
+      if (wanted == null) continue;
+      for (final candidate in freeMine) {
+        if (key(candidate, mine[candidate]!) == wanted &&
+            (compatible?.call(mine[candidate]!, theirs[uid]!) ?? true)) {
+          renames[uid] = candidate;
+          freeMine.remove(candidate);
+          freeTheirs.remove(uid);
+          break;
+        }
+      }
+    }
+  }
+  return renames;
+}
+
+/// [theirs] con los uid de [mine] en lo que es lo mismo. Las colecciones y los
+/// demás conservan `created_at` al sincronizar; si no coincide se comparan los
+/// nombres, y los pedidos por su guía.
+SyncDoc _alignedTo(SyncDoc mine, SyncDoc theirs) {
+  String? created(String _, Map<String, Object?> r) =>
+      r['created_at'] as String?;
+  String? createdAndName(String _, Map<String, Object?> r) =>
+      '${r['created_at']}|${r['name']}';
+  String? name(String _, Map<String, Object?> r) => r['name'] as String?;
+
+  String path(SyncDoc doc, String uid) {
+    final row = doc.locations[uid];
+    if (row == null) return '';
+    return '${path(doc, row['parent'] as String? ?? '')}/${row['name']}';
+  }
+
+  final places = _match(mine.locations, theirs.locations, [
+    createdAndName,
+    created,
+    (uid, r) => path(identical(r, theirs.locations[uid]) ? theirs : mine, uid),
+  ]);
+  final orders = _match(
+    mine.orders,
+    theirs.orders,
+    [
+      (_, r) => r['tracking'] as String?,
+      (_, r) => '${r['created_at']}|${r['store']}',
+    ],
+    compatible: (a, b) =>
+        a['tracking'] == null ||
+        b['tracking'] == null ||
+        a['tracking'] == b['tracking'],
+  );
+  Map<String, Map<String, Object?>> renamed(
+    Map<String, Map<String, Object?>> rows,
+    Map<String, String> renames,
+  ) => {for (final e in rows.entries) renames[e.key] ?? e.key: e.value};
+
+  final named = [createdAndName, created, name];
+  return SyncDoc(
+    collections: renamed(
+      theirs.collections,
+      _match(mine.collections, theirs.collections, named),
+    ),
+    carts: renamed(theirs.carts, _match(mine.carts, theirs.carts, named)),
+    orders: renamed(theirs.orders, orders),
+    statuses: theirs.statuses,
+    locations: {
+      for (final e in theirs.locations.entries)
+        places[e.key] ?? e.key: {
+          ...e.value,
+          'parent': places[e.value['parent']] ?? e.value['parent'],
+        },
+    },
+    stored: {
+      for (final e in theirs.stored.entries)
+        e.key: {
+          ...e.value,
+          'location': places[e.value['location']] ?? e.value['location'],
+        },
+    },
+  );
+}
 
 class _Merge {
   _Merge(this.b, this.m, this.t, this.comicNames);
@@ -351,9 +449,10 @@ class _Merge {
     final out = {...mRow};
     for (final f in fields) {
       if (_same(mRow[f], tRow[f])) continue;
+      if (bRow == null && f == 'created_at') continue;
       if (_same(mRow[f], bRow?[f])) {
         out[f] = tRow[f];
-      } else if (!_same(tRow[f], bRow?[f])) {
+      } else if (f != 'created_at' && !_same(tRow[f], bRow?[f])) {
         notes.add(
           'En ${label(mRow)} cambió ${_fieldLabels[f] ?? f} en los dos dispositivos: '
           'se quedó el valor de este.',

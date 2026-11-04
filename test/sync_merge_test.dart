@@ -66,8 +66,96 @@ void main() {
     expect(phone.db.hasUnsyncedChanges(phone.id), isFalse);
   }
 
-  test('sin un reemplazo previo no deja combinar', () {
-    expect(() => merge(phone, pc), throwsA(isA<SyncException>()));
+  group('primera combinación, sin base y con uid distintos', () {
+    /// El teléfono ya tenía lo de la PC, pero cada uno creó sus uid.
+    void copyWithoutUids() {
+      final data = pc.db.exportUserData(pc.id, fullCatalog: true);
+      void strip(Object? rows) {
+        for (final r in rows as List) {
+          (r as Map).remove('uid');
+        }
+      }
+
+      for (final section in ['collections', 'orders', 'carts', 'locations']) {
+        strip(data[section]);
+      }
+      phone.db.importUserData(phone.id, data);
+    }
+
+    test('no duplica nada y junta lo de los dos lados', () {
+      final c = pc.db.createCollection(pc.id, 'Batman');
+      pc.db.addToCollection(pc.id, c, ['A']);
+      pc.db.createCart(pc.id, 'Carrito');
+      final shelf = pc.db.createLocation(pc.id, 'Closet');
+      pc.db.setComicLocation(pc.id, ['A'], shelf);
+      copyWithoutUids();
+
+      pc.db.addToCollection(pc.id, c, ['B']);
+      final id = phone.db.collections(phone.id).single.id;
+      phone.db.addToCollection(phone.id, id, ['C']);
+      phone.db.renameCollection(phone.id, id, 'Batman 2');
+
+      final plan = merge(phone, pc);
+      expect(plan.sharedBase, isFalse);
+      expectEqualDevices();
+      final merged = pc.db.collections(pc.id).single;
+      // Sin base no se sabe quién renombró: se queda el nombre de la PC.
+      expect(merged.name, 'Batman');
+      expect(plan.result.notes.single, contains('el nombre'));
+      expect(
+        pc.db.collectionItems(pc.id, merged.id).map((i) => i.comic.sku),
+        unorderedEquals(['A', 'B', 'C']),
+      );
+      expect(pc.db.carts(pc.id), hasLength(1));
+      expect(pc.db.locations(pc.id), hasLength(1));
+      expect(phone.db.syncId(phone.id), pc.db.syncId(pc.id));
+    });
+
+    test('pedidos con la misma fecha se distinguen por su guía', () {
+      for (final tracking in ['G1', 'G2']) {
+        pc.db.createOrder(
+          pc.id,
+          tracking: tracking,
+          skus: [tracking == 'G1' ? 'A' : 'B'],
+        );
+      }
+      final data = pc.db.exportUserData(pc.id, fullCatalog: true);
+      for (final o in data['orders'] as List) {
+        (o as Map)['created_at'] = '2026-09-16T12:00:00';
+        o.remove('uid');
+      }
+      pc.db.importUserData(pc.id, {...data});
+      for (final o in data['orders'] as List) {
+        (o as Map).remove('uid');
+      }
+      phone.db.importUserData(phone.id, data);
+
+      merge(phone, pc);
+      expectEqualDevices();
+      expect(pc.db.orders(pc.id), hasLength(2));
+      expect(pc.db.orders(pc.id).map((o) => o.tracking).toSet(), {'G1', 'G2'});
+    });
+
+    test('lo creado aparte con el mismo nombre se junta', () {
+      pc.db.createCollection(pc.id, 'Flash');
+      phone.db.createCollection(phone.id, 'Flash');
+      merge(phone, pc);
+      expectEqualDevices();
+      expect(pc.db.collections(pc.id), hasLength(1));
+    });
+
+    test('después ya hay base y los borrados se respetan', () {
+      final c = pc.db.createCollection(pc.id, 'Se va');
+      copyWithoutUids();
+      merge(phone, pc);
+
+      pc.db.deleteCollection(pc.id, pc.db.collections(pc.id).single.id);
+      expect(c, isPositive);
+      final plan = merge(phone, pc);
+      expect(plan.sharedBase, isTrue);
+      expectEqualDevices();
+      expect(phone.db.collections(phone.id), isEmpty);
+    });
   });
 
   test('el reemplazo conserva los uid y deja la misma base', () {
@@ -141,11 +229,12 @@ void main() {
     expect(order.tracking, 'G123');
   });
 
-  test('el mismo estado cambiado en ambos: gana el más reciente', () {
+  test('el mismo estado cambiado en ambos: gana el más reciente', () async {
     pc.db.setStatus(pc.id, ['A'], ComicStatus.wishlist);
     replace(pc, phone);
 
     pc.db.setStatus(pc.id, ['A'], ComicStatus.notInterested);
+    await Future<void>.delayed(const Duration(milliseconds: 5));
     phone.db.setStatus(phone.id, ['A'], ComicStatus.owned);
 
     final plan = merge(phone, pc);

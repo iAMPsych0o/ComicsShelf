@@ -59,7 +59,8 @@ class MergePlan {
   final MergeResult result;
   final String syncId;
 
-  /// Sin base común (la última sincronización se interrumpió) nada se borra.
+  /// Sin base común (primera combinación o la anterior se interrumpió) nada
+  /// se borra.
   final bool sharedBase;
 
   /// Resultado con el catálogo del otro y con el propio: cada lado agrega los
@@ -75,19 +76,11 @@ class MergePlan {
   };
 }
 
-/// Compara los datos recibidos con los de este dispositivo. Sin un reemplazo
-/// previo no hay uids en común y todo saldría duplicado, así que se rechaza.
+/// Compara los datos recibidos con los de este dispositivo.
 MergePlan planMerge(AppDatabase db, int userId, ReceivedSync got) {
   final myId = db.syncId(userId);
-  final theirId = got.data['base_sync_id'];
-  if (myId == null || theirId == null) {
-    throw SyncException(
-      'Todavía no hay una sincronización en común. Haz primero un reemplazo '
-      '(PC → Móvil o Móvil → PC) y después ya podrás combinar.',
-    );
-  }
   final mine = db.exportUserData(userId, fullCatalog: true);
-  final shared = myId == theirId;
+  final shared = myId != null && myId == got.data['base_sync_id'];
   final result = mergeUserData(
     base: shared ? db.syncBase(userId) : null,
     mine: mine,

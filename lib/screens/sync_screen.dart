@@ -162,7 +162,7 @@ class _ChooseDirection extends StatelessWidget {
           Icons.computer,
           Icons.phone_android,
           'Junta los cambios de los dos dispositivos sin perder los de '
-          'ninguno. La primera vez haz un reemplazo.',
+          'ninguno.',
           arrow: Icons.sync_alt,
         ),
         const SizedBox(height: 16),
@@ -369,8 +369,7 @@ class _ReceivePanelState extends State<_ReceivePanel> {
             '${notes.isEmpty ? '' : '\n\nConflictos resueltos:\n'
                       '${notes.take(5).map((n) => '• $n').join('\n')}'
                       '${notes.length > 5 ? '\n• …y ${notes.length - 5} más' : ''}'}'
-            '${plan.sharedBase ? '' : '\n\nLa última sincronización no terminó '
-                      'bien: esta vez se juntará todo sin borrar nada.'}'
+            '${plan.sharedBase ? '' : '\n\nNo hay una sincronización completa anterior: se juntará todo sin borrar nada, así que lo que hayas borrado en un solo lado puede volver a aparecer.'}'
             '${otherUser ? '\n\nOjo: los datos son de otro usuario ($theirUser).' : ''}'
             '\n\nAntes se guardará un respaldo automático en los dos '
             'dispositivos.',
