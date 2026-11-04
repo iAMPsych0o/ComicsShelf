@@ -9,6 +9,10 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 $flutter = Join-Path $env:USERPROFILE 'dev\flutter\bin\flutter.bat'
+# Desde limpio: una compilacion incremental puede dejar la fuente de iconos
+# anterior y los iconos nuevos salen invisibles.
+& $flutter clean
+if ($LASTEXITCODE -ne 0) { throw 'Fallo flutter clean.' }
 & $flutter build windows --release
 if ($LASTEXITCODE -ne 0) { throw 'Falló la compilación de Flutter.' }
 
